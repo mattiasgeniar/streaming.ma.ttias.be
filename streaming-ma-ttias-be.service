@@ -1,0 +1,26 @@
+[Unit]
+Description=Dutch Audio Streaming Finder
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/html/streaming.ma.ttias.be
+ExecStart=/var/www/html/streaming.ma.ttias.be/venv/bin/uvicorn backend:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+
+# Logging
+StandardOutput=append:/var/www/html/streaming.ma.ttias.be/logs/app.log
+StandardError=append:/var/www/html/streaming.ma.ttias.be/logs/app.log
+
+# Sandboxing
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/www/html/streaming.ma.ttias.be
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

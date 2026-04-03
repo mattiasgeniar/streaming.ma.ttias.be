@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dutch Audio Streaming</title>
+<meta name="description" content="Browse movies & series with Dutch audio across Netflix, Disney+, Prime Video & Apple TV+ in Belgium">
+<meta property="og:title" content="Dutch Audio Streaming">
+<meta property="og:description" content="Browse movies & series with Dutch audio across Netflix, Disney+, Prime Video & Apple TV+ in Belgium">
+<meta property="og:image" content="https://streaming.ma.ttias.be/static/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://streaming.ma.ttias.be">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Dutch Audio Streaming">
+<meta name="twitter:description" content="Browse movies & series with Dutch audio across Netflix, Disney+, Prime Video & Apple TV+ in Belgium">
+<meta name="twitter:image" content="https://streaming.ma.ttias.be/static/og-image.png">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    background: #141414;
+    color: #fff;
+    min-height: 100vh;
+  }
+
+  /* ---------- Header ---------- */
+  header {
+    padding: 20px 24px 0;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  header h1 {
+    font-size: 1.4rem;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  #status {
+    font-size: .8rem;
+    color: #888;
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .refresh-btn {
+    background: none;
+    border: 1px solid #444;
+    color: #888;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all .2s;
+    flex-shrink: 0;
+  }
+  .refresh-btn:hover { border-color: #888; color: #fff; }
+  .refresh-btn.spinning svg { animation: spin .8s linear infinite; }
+  .refresh-btn:disabled { cursor: default; opacity: .5; }
+
+  /* ---------- Filter bar ---------- */
+  .filter-bar {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: #141414ee;
+    backdrop-filter: blur(10px);
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    border-bottom: 1px solid #222;
+  }
+  .pill {
+    padding: 6px 14px;
+    border-radius: 20px;
+    border: 2px solid #444;
+    background: transparent;
+    color: #ccc;
+    font-size: .85rem;
+    cursor: pointer;
+    transition: all .15s;
+    font-weight: 600;
+  }
+  .pill:hover { border-color: #888; color: #fff; }
+  .pill.active { color: #fff; }
+  .pill[data-provider="nfx"].active   { background: #E50914; border-color: #E50914; }
+  .pill[data-provider="dnp"].active   { background: #0063e5; border-color: #0063e5; }
+  .pill[data-provider="prv"].active   { background: #00A8E1; border-color: #00A8E1; }
+  .pill[data-provider="atp"].active   { background: #333;    border-color: #555; }
+  .type-toggle {
+    display: flex;
+    border: 2px solid #444;
+    border-radius: 20px;
+    overflow: hidden;
+  }
+  .type-btn {
+    padding: 6px 14px;
+    background: transparent;
+    border: none;
+    color: #aaa;
+    font-size: .85rem;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all .15s;
+  }
+  .type-btn:hover { color: #fff; }
+  .type-btn.active { background: #e5e5e520; color: #fff; }
+  .search-box {
+    margin-left: auto;
+    padding: 6px 14px;
+    border-radius: 20px;
+    border: 2px solid #444;
+    background: #222;
+    color: #fff;
+    font-size: .85rem;
+    width: 220px;
+    outline: none;
+    transition: border-color .15s;
+  }
+  .search-box:focus { border-color: #888; }
+  .search-box::placeholder { color: #666; }
+
+  /* ---------- Poster grid ---------- */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 16px;
+    padding: 20px 24px 40px;
+  }
+  @media (min-width: 1200px) {
+    .grid { grid-template-columns: repeat(8, 1fr); }
+  }
+  .card {
+    cursor: pointer;
+    position: relative;
+    border-radius: 6px;
+    overflow: hidden;
+    transition: transform .2s, box-shadow .2s;
+    aspect-ratio: 2/3;
+    background: #222;
+  }
+  .card:hover { transform: scale(1.05); box-shadow: 0 8px 25px rgba(0,0,0,.6); z-index: 2; }
+  .card img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  .card .badges {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    display: flex;
+    gap: 3px;
+  }
+  .card .badge {
+    width: 24px;
+    height: 24px;
+    border-radius: 4px;
+    background: #000c;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .card .badge img { width: 18px; height: 18px; object-fit: contain; }
+  .card .score {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    padding: 6px 8px;
+    background: linear-gradient(transparent, #000c);
+    font-size: .75rem;
+    font-weight: 700;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+  }
+  .card .score .imdb { color: #f5c518; }
+
+  /* ---------- Modal ---------- */
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: #000c;
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: #1a1a1a;
+    border-radius: 12px;
+    max-width: 700px;
+    width: 100%;
+    max-height: 90vh;
+    overflow-y: auto;
+    position: relative;
+  }
+  .modal-backdrop {
+    width: 100%;
+    aspect-ratio: 16/9;
+    object-fit: cover;
+    border-radius: 12px 12px 0 0;
+    display: block;
+    background: #222;
+  }
+  .modal-close {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    background: #000a;
+    border: none;
+    color: #fff;
+    font-size: 1.5rem;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .modal-body { padding: 24px; }
+  .modal-body h2 { font-size: 1.5rem; margin-bottom: 4px; }
+  .modal-meta {
+    color: #999;
+    font-size: .85rem;
+    margin-bottom: 12px;
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .modal-meta .imdb { color: #f5c518; font-weight: 700; }
+  .modal-meta .dot { color: #444; }
+  .modal-synopsis {
+    color: #ccc;
+    font-size: .9rem;
+    line-height: 1.5;
+    margin-bottom: 20px;
+  }
+  .platform-buttons {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .platform-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 18px;
+    border-radius: 8px;
+    border: none;
+    color: #fff;
+    font-size: .9rem;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: none;
+    transition: opacity .15s;
+  }
+  .platform-btn:hover { opacity: .85; }
+  .platform-btn img { width: 22px; height: 22px; border-radius: 3px; }
+  .platform-btn[data-provider="nfx"]   { background: #E50914; }
+  .platform-btn[data-provider="dnp"]   { background: #0063e5; }
+  .platform-btn[data-provider="prv"]   { background: #00A8E1; }
+  .platform-btn[data-provider="atp"]   { background: #333; }
+
+  /* ---------- Loading ---------- */
+  .loading {
+    text-align: center;
+    padding: 60px 20px;
+    color: #666;
+    font-size: 1.1rem;
+  }
+  .loading .spinner {
+    width: 40px;
+    height: 40px;
+    border: 3px solid #333;
+    border-top-color: #e50914;
+    border-radius: 50%;
+    animation: spin .8s linear infinite;
+    margin: 0 auto 16px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---------- Count ---------- */
+  .results-count {
+    padding: 0 24px;
+    color: #666;
+    font-size: .8rem;
+  }
+
+  /* ---------- Toast ---------- */
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(80px);
+    background: #333;
+    color: #fff;
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-size: .85rem;
+    z-index: 2000;
+    opacity: 0;
+    transition: transform .3s, opacity .3s;
+    pointer-events: none;
+  }
+  .toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Dutch Audio Streaming</h1>
+  <span id="status">
+    <span id="statusText"></span>
+    <button class="refresh-btn" id="refreshBtn" title="Refresh titles from JustWatch">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6"/><path d="M2.5 22v-6h6"/><path d="M3.5 12a9 9 0 0 1 15-6.7L21.5 8"/><path d="M20.5 12a9 9 0 0 1-15 6.7L2.5 16"/></svg>
+    </button>
+  </span>
+</header>
+
+<div class="filter-bar">
+  <button class="pill active" data-provider="nfx">Netflix</button>
+  <button class="pill active" data-provider="dnp">Disney+</button>
+  <button class="pill active" data-provider="prv">Prime Video</button>
+  <button class="pill active" data-provider="atp">Apple TV+</button>
+  <div class="type-toggle">
+    <button class="type-btn active" data-type="ALL">All</button>
+    <button class="type-btn" data-type="MOVIE">Movies</button>
+    <button class="type-btn" data-type="SHOW">Shows</button>
+  </div>
+  <input type="text" class="search-box" placeholder="Search titles..." id="searchInput">
+</div>
+
+<div class="results-count" id="resultsCount"></div>
+<div class="grid" id="grid"></div>
+<div class="loading" id="loading">
+  <div class="spinner"></div>
+  Loading Dutch audio titles...
+</div>
+
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal" id="modal">
+    <img class="modal-backdrop" id="modalBackdrop" src="" alt="">
+    <button class="modal-close" id="modalClose">&times;</button>
+    <div class="modal-body">
+      <h2 id="modalTitle"></h2>
+      <div class="modal-meta" id="modalMeta"></div>
+      <p class="modal-synopsis" id="modalSynopsis"></p>
+      <div class="platform-buttons" id="modalPlatforms"></div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(function() {
+  let allTitles = [];
+  let activeProviders = new Set(['nfx', 'dnp', 'prv', 'atp']);
+  let activeType = 'ALL';
+  let searchQuery = '';
+
+  const grid = document.getElementById('grid');
+  const loading = document.getElementById('loading');
+  const resultsCount = document.getElementById('resultsCount');
+  const statusText = document.getElementById('statusText');
+  const refreshBtn = document.getElementById('refreshBtn');
+  const modalOverlay = document.getElementById('modalOverlay');
+  const searchInput = document.getElementById('searchInput');
+  var pollTimer = null;
+  var toastTimer = null;
+  var toastEl = document.getElementById('toast');
+
+  // ---------- Toast ----------
+  function showToast(msg) {
+    toastEl.textContent = msg;
+    toastEl.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function() { toastEl.classList.remove('show'); }, 3000);
+  }
+
+  // ---------- Status helpers ----------
+  function formatAge(seconds) {
+    if (seconds == null) return 'never';
+    if (seconds < 60) return 'just now';
+    if (seconds < 3600) return Math.round(seconds / 60) + 'm ago';
+    if (seconds < 86400) return Math.round(seconds / 3600) + 'h ago';
+    return Math.round(seconds / 86400) + 'd ago';
+  }
+
+  function formatCountdown(seconds) {
+    var h = Math.floor(seconds / 3600);
+    var m = Math.floor((seconds % 3600) / 60);
+    if (h > 0) return h + 'h ' + m + 'm';
+    return m + 'm';
+  }
+
+  function updateStatus(status) {
+    var text = status.cached_titles + ' titles \u00B7 updated ' + formatAge(status.cache_age_seconds);
+    if (status.refreshing) {
+      text += ' \u00B7 refreshing\u2026';
+      refreshBtn.classList.add('spinning');
+      refreshBtn.disabled = true;
+    } else if (status.refresh_cooldown_remaining > 0) {
+      text += ' \u00B7 next refresh in ' + formatCountdown(status.refresh_cooldown_remaining);
+      refreshBtn.classList.remove('spinning');
+      refreshBtn.disabled = true;
+    } else {
+      refreshBtn.classList.remove('spinning');
+      refreshBtn.disabled = false;
+    }
+    statusText.textContent = text;
+  }
+
+  // ---------- Fetch data ----------
+  async function init() {
+    try {
+      var [titles, status] = await Promise.all([
+        fetch('/api/titles').then(function(r) { return r.json(); }),
+        fetch('/api/status').then(function(r) { return r.json(); }),
+      ]);
+      allTitles = titles;
+      loading.style.display = 'none';
+      updateStatus(status);
+
+      if (!titles.length) {
+        loading.style.display = '';
+        loading.textContent = 'No titles yet. Click the refresh button to fetch from JustWatch.';
+      }
+
+      render();
+    } catch (e) {
+      loading.textContent = 'Failed to load titles. Is the backend running?';
+      loading.style.color = '#e55';
+      console.error(e);
+    }
+  }
+
+  // ---------- Filter & render ----------
+  function getFiltered() {
+    return allTitles.filter(function(t) {
+      var hasProvider = t.platforms.some(function(p) { return activeProviders.has(p.shortName); });
+      if (!hasProvider) return false;
+      if (activeType !== 'ALL' && t.type !== activeType) return false;
+      if (searchQuery) {
+        var q = searchQuery.toLowerCase();
+        var title = (t.title || '').toLowerCase();
+        if (!title.includes(q)) return false;
+      }
+      return true;
+    });
+  }
+
+  function render() {
+    var filtered = getFiltered();
+    resultsCount.textContent = filtered.length + ' titles';
+
+    var toRender = filtered.slice(0, 500);
+    var frag = document.createDocumentFragment();
+
+    for (var i = 0; i < toRender.length; i++) {
+      var title = toRender[i];
+      var card = document.createElement('div');
+      card.className = 'card';
+      card.onclick = (function(t) { return function() { openModal(t); }; })(title);
+
+      if (title.posterUrl) {
+        var img = document.createElement('img');
+        img.src = title.posterUrl;
+        img.alt = title.title || '';
+        img.loading = 'lazy';
+        card.appendChild(img);
+      }
+
+      var badges = document.createElement('div');
+      badges.className = 'badges';
+      for (var j = 0; j < title.platforms.length; j++) {
+        var p = title.platforms[j];
+        if (!activeProviders.has(p.shortName)) continue;
+        var badge = document.createElement('div');
+        badge.className = 'badge';
+        if (p.icon) {
+          var bIcon = document.createElement('img');
+          bIcon.src = p.icon;
+          bIcon.alt = p.name;
+          badge.appendChild(bIcon);
+        }
+        badges.appendChild(badge);
+      }
+      card.appendChild(badges);
+
+      var score = document.createElement('div');
+      score.className = 'score';
+      var titleSpan = document.createElement('span');
+      titleSpan.textContent = title.title || '';
+      titleSpan.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1';
+      score.appendChild(titleSpan);
+      if (title.imdbScore) {
+        var imdb = document.createElement('span');
+        imdb.className = 'imdb';
+        imdb.textContent = title.imdbScore.toFixed(1);
+        score.appendChild(imdb);
+      }
+      card.appendChild(score);
+
+      frag.appendChild(card);
+    }
+
+    grid.textContent = '';
+    grid.appendChild(frag);
+
+    if (filtered.length > 500) {
+      resultsCount.textContent = 'Showing 500 of ' + filtered.length + ' titles';
+    }
+  }
+
+  // ---------- Modal ----------
+  function buildMetaItems(title) {
+    var items = [];
+    if (title.year) items.push({ text: String(title.year) });
+    if (title.type) items.push({ text: title.type === 'MOVIE' ? 'Movie' : 'Series' });
+    if (title.runtime) items.push({ text: title.runtime + ' min' });
+    if (title.ageCertification) items.push({ text: title.ageCertification });
+    if (title.imdbScore) items.push({ text: 'IMDb ' + title.imdbScore.toFixed(1), cls: 'imdb' });
+    return items;
+  }
+
+  function openModal(title) {
+    document.getElementById('modalTitle').textContent = title.title || '';
+
+    var backdrop = document.getElementById('modalBackdrop');
+    if (title.backdropUrl) {
+      backdrop.src = title.backdropUrl;
+      backdrop.style.display = 'block';
+    } else {
+      backdrop.style.display = 'none';
+    }
+
+    // Meta — built with DOM methods
+    var meta = document.getElementById('modalMeta');
+    meta.textContent = '';
+    var metaItems = buildMetaItems(title);
+    for (var i = 0; i < metaItems.length; i++) {
+      if (i > 0) {
+        var dot = document.createElement('span');
+        dot.className = 'dot';
+        dot.textContent = '\u00B7';
+        meta.appendChild(dot);
+      }
+      var span = document.createElement('span');
+      if (metaItems[i].cls) span.className = metaItems[i].cls;
+      span.textContent = metaItems[i].text;
+      meta.appendChild(span);
+    }
+
+    document.getElementById('modalSynopsis').textContent = title.synopsis || '';
+
+    // Platform buttons — built with DOM methods
+    var plat = document.getElementById('modalPlatforms');
+    plat.textContent = '';
+    for (var j = 0; j < title.platforms.length; j++) {
+      var p = title.platforms[j];
+      var a = document.createElement('a');
+      a.className = 'platform-btn';
+      a.dataset.provider = p.shortName;
+      a.href = (p.deeplink && p.deeplink.indexOf('https://') === 0) ? p.deeplink : '#';
+      a.target = '_blank';
+      a.rel = 'noopener';
+      if (p.icon) {
+        var pIcon = document.createElement('img');
+        pIcon.src = p.icon;
+        pIcon.alt = '';
+        a.appendChild(pIcon);
+      }
+      a.appendChild(document.createTextNode('Watch on ' + p.name));
+      plat.appendChild(a);
+    }
+
+    modalOverlay.classList.add('open');
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeModal() {
+    modalOverlay.classList.remove('open');
+    document.body.style.overflow = '';
+  }
+
+  document.getElementById('modalClose').onclick = closeModal;
+  modalOverlay.onclick = function(e) { if (e.target === modalOverlay) closeModal(); };
+  document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeModal(); });
+
+  // ---------- Filter events ----------
+  document.querySelectorAll('.pill[data-provider]').forEach(function(btn) {
+    btn.onclick = function() {
+      var p = btn.dataset.provider;
+      if (activeProviders.has(p)) {
+        activeProviders.delete(p);
+        btn.classList.remove('active');
+      } else {
+        activeProviders.add(p);
+        btn.classList.add('active');
+      }
+      render();
+    };
+  });
+
+  document.querySelectorAll('.type-btn').forEach(function(btn) {
+    btn.onclick = function() {
+      document.querySelectorAll('.type-btn').forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeType = btn.dataset.type;
+      render();
+    };
+  });
+
+  var debounceTimer;
+  searchInput.oninput = function() {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(function() {
+      searchQuery = searchInput.value.trim();
+      render();
+    }, 200);
+  };
+
+  // ---------- Refresh ----------
+  refreshBtn.onclick = function() {
+    fetch('/api/refresh', {
+      method: 'POST',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    }).then(function(r) { return r.json(); }).then(function(data) {
+      if (data.status === 'started') {
+        showToast('Refreshing titles from JustWatch\u2026');
+        refreshBtn.classList.add('spinning');
+        refreshBtn.disabled = true;
+        startPolling();
+      } else if (data.status === 'already_running') {
+        showToast('Refresh already in progress');
+      } else if (data.status === 'cooldown') {
+        showToast(data.message || 'Cooldown active');
+        refreshBtn.disabled = true;
+      }
+    });
+  };
+
+  function startPolling() {
+    if (pollTimer) return;
+    pollTimer = setInterval(function() {
+      fetch('/api/status').then(function(r) { return r.json(); }).then(function(status) {
+        updateStatus(status);
+        if (!status.refreshing) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+          if (status.refresh_error) {
+            showToast('Refresh failed');
+          } else {
+            // Reload titles
+            fetch('/api/titles').then(function(r) { return r.json(); }).then(function(titles) {
+              allTitles = titles;
+              loading.style.display = 'none';
+              showToast('Refreshed! ' + titles.length + ' titles loaded');
+              render();
+            });
+          }
+        }
+      });
+    }, 3000);
+  }
+
+  // ---------- Go ----------
+  init();
+})();
+</script>
+</body>
+</html>
