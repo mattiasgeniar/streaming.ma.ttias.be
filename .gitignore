@@ -1,1 +1,7 @@
 titles.db
+__pycache__/
+*.pyc
+venv/
+*.log
+.DS_Store
+.gstack/

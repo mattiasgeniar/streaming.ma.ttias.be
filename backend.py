@@ -10,9 +10,11 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import httpx
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+
+STATIC_DIR = Path(__file__).parent / "static"
 
 logger = logging.getLogger("dutch-audio")
 logging.basicConfig(level=logging.INFO)
@@ -292,6 +294,8 @@ async def _fetch_all() -> tuple[list[dict], dict[str, int]]:
 
         for raw_title in dutch_titles:
             oid = raw_title.get("objectId")
+            if not oid:
+                continue
             if oid in merged:
                 # Merge platforms from this provider into existing entry
                 existing_shorts = {
@@ -314,57 +318,52 @@ async def _fetch_all() -> tuple[list[dict], dict[str, int]]:
 
 
 def _init_db() -> None:
-    con = sqlite3.connect(DB_PATH)
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS titles (
-            id TEXT PRIMARY KEY,
-            data TEXT NOT NULL
-        )
-    """)
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS meta (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        )
-    """)
-    con.commit()
-    con.close()
+    with sqlite3.connect(DB_PATH) as con:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS titles (
+                id TEXT PRIMARY KEY,
+                data TEXT NOT NULL
+            )
+        """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
 
 
 def _load_from_db() -> tuple[list[dict], dict[str, int], float]:
     """Load titles, counts, and updated_at from SQLite. Returns empty data if DB is empty."""
-    con = sqlite3.connect(DB_PATH)
-    rows = con.execute("SELECT data FROM titles").fetchall()
-    titles = [json.loads(r[0]) for r in rows]
-    titles.sort(key=lambda t: t.get("imdbScore") or 0, reverse=True)
+    with sqlite3.connect(DB_PATH) as con:
+        rows = con.execute("SELECT data FROM titles").fetchall()
+        titles = [json.loads(r[0]) for r in rows]
+        titles.sort(key=lambda t: t.get("imdbScore") or 0, reverse=True)
 
-    counts_row = con.execute("SELECT value FROM meta WHERE key = 'counts'").fetchone()
-    counts = json.loads(counts_row[0]) if counts_row else {}
+        counts_row = con.execute("SELECT value FROM meta WHERE key = 'counts'").fetchone()
+        counts = json.loads(counts_row[0]) if counts_row else {}
 
-    ts_row = con.execute("SELECT value FROM meta WHERE key = 'updated_at'").fetchone()
-    updated_at = float(ts_row[0]) if ts_row else 0.0
+        ts_row = con.execute("SELECT value FROM meta WHERE key = 'updated_at'").fetchone()
+        updated_at = float(ts_row[0]) if ts_row else 0.0
 
-    con.close()
     return titles, counts, updated_at
 
 
 def _save_to_db(titles: list[dict], counts: dict[str, int]) -> None:
-    con = sqlite3.connect(DB_PATH)
-    con.execute("DELETE FROM titles")
-    con.executemany(
-        "INSERT INTO titles (id, data) VALUES (?, ?)",
-        [(str(t["id"]), json.dumps(t)) for t in titles],
-    )
-    con.execute(
-        "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
-        ("counts", json.dumps(counts)),
-    )
-    con.execute(
-        "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
-        ("updated_at", str(time.time())),
-    )
-    con.commit()
-    con.close()
+    with sqlite3.connect(DB_PATH) as con:
+        con.execute("DELETE FROM titles")
+        con.executemany(
+            "INSERT INTO titles (id, data) VALUES (?, ?)",
+            [(str(t["id"]), json.dumps(t)) for t in titles],
+        )
+        con.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            ("counts", json.dumps(counts)),
+        )
+        con.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            ("updated_at", str(time.time())),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -372,35 +371,32 @@ def _save_to_db(titles: list[dict], counts: dict[str, int]) -> None:
 # ---------------------------------------------------------------------------
 
 _cache: dict = {"titles": [], "counts": {}, "updated_at": 0.0}
-_refresh_lock = asyncio.Lock()
 _refresh_status: dict = {"running": False, "error": None}
 
 
 async def _refresh_and_persist() -> None:
     """Fetch from JustWatch, update DB and in-memory cache."""
-    async with _refresh_lock:
-        _refresh_status["running"] = True
-        _refresh_status["error"] = None
-        try:
-            logger.info("Refreshing from JustWatch API...")
-            start = time.time()
-            titles, counts = await _fetch_all()
-            if not titles:
-                raise RuntimeError("Fetch returned 0 titles — keeping existing data")
-            await asyncio.to_thread(_save_to_db, titles, counts)
-            _cache["titles"] = titles
-            _cache["counts"] = counts
-            _cache["updated_at"] = time.time()
-            logger.info(
-                "Refresh complete in %.1fs — %d unique titles",
-                time.time() - start,
-                len(titles),
-            )
-        except Exception:
-            logger.exception("Refresh failed")
-            _refresh_status["error"] = "Refresh failed — check server logs"
-        finally:
-            _refresh_status["running"] = False
+    _refresh_status["error"] = None
+    try:
+        logger.info("Refreshing from JustWatch API...")
+        start = time.time()
+        titles, counts = await _fetch_all()
+        if not titles:
+            raise RuntimeError("Fetch returned 0 titles — keeping existing data")
+        await asyncio.to_thread(_save_to_db, titles, counts)
+        _cache["titles"] = titles
+        _cache["counts"] = counts
+        _cache["updated_at"] = time.time()
+        logger.info(
+            "Refresh complete in %.1fs — %d unique titles",
+            time.time() - start,
+            len(titles),
+        )
+    except Exception:
+        logger.exception("Refresh failed")
+        _refresh_status["error"] = "Refresh failed — check server logs"
+    finally:
+        _refresh_status["running"] = False
 
 
 # ---------------------------------------------------------------------------
@@ -421,23 +417,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Dutch Audio Streaming Finder", lifespan=lifespan)
-
-
-@app.middleware("http")
-async def security_headers(request: Request, call_next):
-    response: Response = await call_next(request)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["Referrer-Policy"] = "no-referrer"
-    return response
-
-
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 @app.get("/")
 async def index():
-    return FileResponse("static/index.html")
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.get("/api/titles")
@@ -449,9 +434,9 @@ async def api_titles():
 async def api_refresh(request: Request):
     # CSRF protection: require header that triggers CORS preflight
     if not request.headers.get("x-requested-with"):
-        return {"status": "forbidden"}
+        raise HTTPException(status_code=403, detail="Forbidden")
 
-    if _refresh_lock.locked():
+    if _refresh_status["running"]:
         return {"status": "already_running"}
 
     # 24-hour cooldown
@@ -462,6 +447,8 @@ async def api_refresh(request: Request):
         return {"status": "cooldown", "retry_after": remaining,
                 "message": f"Next refresh available in {hours}h {mins}m"}
 
+    # Set flag synchronously before yielding control — prevents race condition
+    _refresh_status["running"] = True
     asyncio.create_task(_refresh_and_persist())
     return {"status": "started"}
 
