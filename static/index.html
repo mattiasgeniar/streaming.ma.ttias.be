@@ -437,7 +437,7 @@
   }
 
   function updateStatus(status) {
-    var text = status.cached_titles + ' titles \u00B7 updated ' + formatAge(status.cache_age_seconds);
+    var text = 'updated ' + formatAge(status.cache_age_seconds);
     if (status.refreshing) {
       text += ' \u00B7 refreshing\u2026';
       refreshBtn.classList.add('spinning');
