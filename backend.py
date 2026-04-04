@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sqlite3
 import time
 from contextlib import asynccontextmanager
@@ -10,9 +11,12 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import httpx
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+
+load_dotenv(Path(__file__).parent / ".env")
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -38,6 +42,18 @@ PROVIDERS = {
     "dnp": {"name": "Disney+", "color": "#0063e5"},
     "prv": {"name": "Prime Video", "color": "#00A8E1"},
     "atp": {"name": "Apple TV+", "color": "#000000"},
+}
+
+# Streaming Availability API
+SA_BASE = "https://streaming-availability.p.rapidapi.com"
+SA_CATALOGS = "netflix,disney,prime.subscription,apple"
+SA_MAX_REQUESTS_PER_REFRESH = 80  # leave headroom in 100/day free tier
+# Map SA service IDs to our provider short names
+SA_SERVICE_MAP = {
+    "netflix": "nfx",
+    "disney": "dnp",
+    "prime": "prv",
+    "apple": "atp",
 }
 
 # ---------------------------------------------------------------------------
@@ -125,76 +141,8 @@ def _build_variables(provider: str, offset: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Fetching
+# Shared helpers
 # ---------------------------------------------------------------------------
-
-
-async def _fetch_page(
-    client: httpx.AsyncClient, provider: str, offset: int
-) -> list[dict]:
-    payload = {
-        "operationName": "GetPopularTitles",
-        "variables": _build_variables(provider, offset),
-        "query": GQL_QUERY,
-    }
-    resp = await client.post(JUSTWATCH_GRAPHQL, json=payload, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-    if "errors" in data:
-        logger.warning("GraphQL errors for %s offset %d: %s", provider, offset, data["errors"][0].get("message"))
-    edges = (data.get("data") or {}).get("popularTitles") or {}
-    edges = edges.get("edges", [])
-    return [e["node"] for e in edges]
-
-
-async def _fetch_provider(client: httpx.AsyncClient, provider: str) -> list[dict]:
-    all_titles: list[dict] = []
-    for offset in range(0, MAX_OFFSET + 1, PAGE_SIZE):
-        try:
-            page = await _fetch_page(client, provider, offset)
-        except Exception:
-            logger.exception("Failed fetching %s offset %d", provider, offset)
-            break
-        all_titles.extend(page)
-        logger.info(
-            "%s offset=%d → %d titles (total %d)",
-            provider,
-            offset,
-            len(page),
-            len(all_titles),
-        )
-        if len(page) < PAGE_SIZE:
-            break
-        await asyncio.sleep(PAGE_DELAY)
-    return all_titles
-
-
-def _has_dutch_audio(title: dict) -> bool:
-    for offer in title.get("offers") or []:
-        if "nl" in (offer.get("audioLanguages") or []):
-            return True
-    return False
-
-
-def _poster_url(raw: str | None) -> str | None:
-    if not raw:
-        return None
-    if raw.startswith("http"):
-        return raw
-    return IMAGE_BASE + raw
-
-
-def _backdrop_url(content: dict) -> str | None:
-    backdrops = content.get("backdrops") or []
-    if not backdrops:
-        return None
-    raw = backdrops[0].get("backdropUrl")
-    if not raw:
-        return None
-    if raw.startswith("http"):
-        return raw
-    return IMAGE_BASE + raw
-
 
 TRACKING_PARAMS = {"at", "ct", "itscg", "itsct", "utm_source", "utm_medium",
                    "utm_campaign", "utm_content", "utm_term", "subId1", "subId2",
@@ -220,11 +168,73 @@ def _clean_deeplink(url: str | None) -> str | None:
     return urlunparse(parsed._replace(query=new_query))
 
 
-def _transform_title(title: dict) -> dict:
+def _resolve_image_url(raw: str | None) -> str | None:
+    """Prepend IMAGE_BASE to relative JustWatch image URLs."""
+    if not raw:
+        return None
+    if raw.startswith("http"):
+        return raw
+    return IMAGE_BASE + raw
+
+
+# ---------------------------------------------------------------------------
+# JustWatch fetching
+# ---------------------------------------------------------------------------
+
+
+async def _jw_fetch_page(
+    client: httpx.AsyncClient, provider: str, offset: int
+) -> list[dict]:
+    payload = {
+        "operationName": "GetPopularTitles",
+        "variables": _build_variables(provider, offset),
+        "query": GQL_QUERY,
+    }
+    resp = await client.post(JUSTWATCH_GRAPHQL, json=payload, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+    if "errors" in data:
+        logger.warning("GraphQL errors for %s offset %d: %s", provider, offset, data["errors"][0].get("message"))
+    popular = (data.get("data") or {}).get("popularTitles") or {}
+    edges = popular.get("edges", [])
+    return [e["node"] for e in edges]
+
+
+async def _jw_fetch_provider(client: httpx.AsyncClient, provider: str) -> list[dict]:
+    all_titles: list[dict] = []
+    for offset in range(0, MAX_OFFSET + 1, PAGE_SIZE):
+        try:
+            page = await _jw_fetch_page(client, provider, offset)
+        except Exception:
+            logger.exception("Failed fetching %s offset %d", provider, offset)
+            break
+        all_titles.extend(page)
+        logger.info(
+            "JW %s offset=%d → %d titles (total %d)",
+            provider, offset, len(page), len(all_titles),
+        )
+        if len(page) < PAGE_SIZE:
+            break
+        await asyncio.sleep(PAGE_DELAY)
+    return all_titles
+
+
+def _jw_has_dutch_audio(title: dict) -> bool:
+    for offer in title.get("offers") or []:
+        if "nl" in (offer.get("audioLanguages") or []):
+            return True
+    return False
+
+
+def _jw_transform_title(title: dict) -> dict:
     content = title.get("content") or {}
     scoring = content.get("scoring") or {}
     external = content.get("externalIds") or {}
     genres = [g["shortName"] for g in (content.get("genres") or [])]
+
+    # Backdrop
+    backdrops = content.get("backdrops") or []
+    backdrop_url = _resolve_image_url(backdrops[0].get("backdropUrl")) if backdrops else None
 
     # Collect platforms with Dutch audio
     platforms: list[dict] = []
@@ -237,14 +247,11 @@ def _transform_title(title: dict) -> dict:
         if short in seen_packages:
             continue
         seen_packages.add(short)
-        icon = pkg.get("icon")
-        if icon and not icon.startswith("http"):
-            icon = IMAGE_BASE + icon
         platforms.append(
             {
                 "name": pkg.get("clearName", short),
                 "shortName": short,
-                "icon": icon,
+                "icon": _resolve_image_url(pkg.get("icon")),
                 "deeplink": _clean_deeplink(offer.get("standardWebURL")),
             }
         )
@@ -256,40 +263,41 @@ def _transform_title(title: dict) -> dict:
         "year": content.get("originalReleaseYear"),
         "runtime": content.get("runtime"),
         "synopsis": content.get("shortDescription"),
-        "posterUrl": _poster_url(content.get("posterUrl")),
-        "backdropUrl": _backdrop_url(content),
+        "posterUrl": _resolve_image_url(content.get("posterUrl")),
+        "backdropUrl": backdrop_url,
         "imdbScore": scoring.get("imdbScore"),
         "imdbId": external.get("imdbId"),
         "genres": genres,
         "ageCertification": content.get("ageCertification"),
         "platforms": platforms,
+        "source": "justwatch",
     }
 
 
-async def _fetch_all() -> tuple[list[dict], dict[str, int]]:
-    """Fetch all providers sequentially, filter for Dutch audio, deduplicate."""
+async def _jw_fetch_all() -> tuple[dict[str, dict], dict[str, int]]:
+    """Fetch all providers from JustWatch. Returns merged dict keyed by ID and counts."""
     results: list[list[dict] | Exception] = []
     async with httpx.AsyncClient() as client:
         for provider in PROVIDERS:
             try:
-                result = await _fetch_provider(client, provider)
+                result = await _jw_fetch_provider(client, provider)
             except Exception as e:
                 result = e
             results.append(result)
 
     counts: dict[str, int] = {}
-    merged: dict[str, dict] = {}  # objectId → transformed title
+    merged: dict[str, dict] = {}
 
     for provider, result in zip(PROVIDERS, results):
         if isinstance(result, Exception):
-            logger.error("Provider %s failed: %s", provider, result)
+            logger.error("JW provider %s failed: %s", provider, result)
             counts[provider] = 0
             continue
 
-        dutch_titles = [t for t in result if _has_dutch_audio(t)]
+        dutch_titles = [t for t in result if _jw_has_dutch_audio(t)]
         counts[provider] = len(dutch_titles)
         logger.info(
-            "%s: %d total, %d with Dutch audio", provider, len(result), len(dutch_titles)
+            "JW %s: %d total, %d with Dutch audio", provider, len(result), len(dutch_titles)
         )
 
         for raw_title in dutch_titles:
@@ -297,18 +305,236 @@ async def _fetch_all() -> tuple[list[dict], dict[str, int]]:
             if not oid:
                 continue
             if oid in merged:
-                # Merge platforms from this provider into existing entry
-                existing_shorts = {
-                    p["shortName"] for p in merged[oid]["platforms"]
-                }
-                new_entry = _transform_title(raw_title)
+                existing_shorts = {p["shortName"] for p in merged[oid]["platforms"]}
+                new_entry = _jw_transform_title(raw_title)
                 for plat in new_entry["platforms"]:
                     if plat["shortName"] not in existing_shorts:
                         merged[oid]["platforms"].append(plat)
             else:
-                merged[oid] = _transform_title(raw_title)
+                merged[oid] = _jw_transform_title(raw_title)
 
-    titles = sorted(merged.values(), key=lambda t: t.get("imdbScore") or 0, reverse=True)
+    return merged, counts
+
+
+# ---------------------------------------------------------------------------
+# Streaming Availability API fetching
+# ---------------------------------------------------------------------------
+
+SA_PROVIDER_ICONS = {
+    "nfx": "https://images.justwatch.com/icon/207360008/s100/netflix.png",
+    "dnp": "https://images.justwatch.com/icon/313118777/s100/disneyplus.png",
+    "prv": "https://images.justwatch.com/icon/322992749/s100/amazonprimevideo.png",
+    "atp": "https://images.justwatch.com/icon/338367329/s100/appletvplus.png",
+}
+
+SA_PROVIDER_NAMES = {
+    "nfx": "Netflix",
+    "dnp": "Disney+",
+    "prv": "Amazon Prime Video",
+    "atp": "Apple TV",
+}
+
+
+def _sa_has_dutch_audio(show: dict) -> bool:
+    """Check if any BE streaming option has Dutch audio."""
+    for opt in show.get("streamingOptions", {}).get("be", []):
+        svc = opt.get("service", {}).get("id", "")
+        if svc not in SA_SERVICE_MAP:
+            continue
+        for audio in opt.get("audios", []):
+            if audio.get("language") in ("nld", "dut"):
+                return True
+    return False
+
+
+def _sa_transform_show(show: dict) -> dict:
+    """Transform a Streaming Availability show into our common format."""
+    # Collect platforms with Dutch audio
+    platforms: list[dict] = []
+    seen: set[str] = set()
+    for opt in show.get("streamingOptions", {}).get("be", []):
+        svc_id = opt.get("service", {}).get("id", "")
+        short = SA_SERVICE_MAP.get(svc_id)
+        if not short or short in seen:
+            continue
+        audios = [a.get("language") for a in opt.get("audios", [])]
+        if "nld" not in audios and "dut" not in audios:
+            continue
+        seen.add(short)
+        platforms.append({
+            "name": SA_PROVIDER_NAMES.get(short, svc_id),
+            "shortName": short,
+            "icon": SA_PROVIDER_ICONS.get(short),
+            "deeplink": _clean_deeplink(opt.get("link")),
+        })
+
+    # Image URLs
+    poster = None
+    backdrop = None
+    posters = show.get("imageSet", {})
+    if posters.get("verticalPoster", {}).get("w720"):
+        poster = posters["verticalPoster"]["w720"]
+    backdrop_data = posters.get("horizontalBackdrop", {})
+    if backdrop_data.get("w1080"):
+        backdrop = backdrop_data["w1080"]
+
+    # IMDb score — SA returns as 0-100 int
+    imdb_id = show.get("imdbId")
+    imdb_score_raw = show.get("rating")
+    imdb_score = imdb_score_raw / 10 if imdb_score_raw else None
+
+    show_type = show.get("showType", "").upper()
+    if show_type == "SERIES":
+        show_type = "SHOW"
+
+    return {
+        "id": f"sa-{show.get('id', '')}",
+        "title": show.get("title"),
+        "type": show_type or None,
+        "year": show.get("releaseYear") or show.get("firstAirYear"),
+        "runtime": show.get("runtime"),
+        "synopsis": show.get("overview"),
+        "posterUrl": poster,
+        "backdropUrl": backdrop,
+        "imdbScore": imdb_score,
+        "imdbId": imdb_id,
+        "genres": [g.get("id", "") for g in show.get("genres", [])],
+        "ageCertification": None,
+        "platforms": platforms,
+        "source": "streaming-availability",
+    }
+
+
+async def _sa_fetch_page(client: httpx.AsyncClient, cursor: str | None = None) -> tuple[list[dict], str | None]:
+    """Fetch one page from Streaming Availability API. Returns (shows, next_cursor)."""
+    api_key = os.getenv("RAPIDAPI_KEY", "")
+    if not api_key:
+        return [], None
+
+    params: dict = {
+        "country": "be",
+        "catalogs": SA_CATALOGS,
+        "order_by": "popularity_1year",
+        "output_language": "en",
+    }
+    if cursor:
+        params["cursor"] = cursor
+
+    resp = await client.get(
+        f"{SA_BASE}/shows/search/filters",
+        params=params,
+        headers={
+            "x-rapidapi-host": "streaming-availability.p.rapidapi.com",
+            "x-rapidapi-key": api_key,
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    return data.get("shows", []), data.get("nextCursor")
+
+
+async def _sa_fetch_all(resume_cursor: str | None = None) -> tuple[dict[str, dict], dict[str, int], str | None]:
+    """Fetch from Streaming Availability API with budget limit.
+    Returns (merged_dict, counts, last_cursor_for_resume).
+    """
+    api_key = os.getenv("RAPIDAPI_KEY", "")
+    if not api_key:
+        logger.info("SA: No RAPIDAPI_KEY configured, skipping")
+        return {}, {}, None
+
+    merged: dict[str, dict] = {}
+    counts: dict[str, int] = {"nfx": 0, "dnp": 0, "prv": 0, "atp": 0}
+    cursor = resume_cursor
+    requests_used = 0
+
+    async with httpx.AsyncClient() as client:
+        while requests_used < SA_MAX_REQUESTS_PER_REFRESH:
+            try:
+                shows, next_cursor = await _sa_fetch_page(client, cursor)
+                requests_used += 1
+            except Exception:
+                logger.exception("SA: Failed at request %d, cursor=%s", requests_used, cursor)
+                break
+
+            logger.info("SA: page %d → %d shows", requests_used, len(shows))
+
+            for show in shows:
+                if not _sa_has_dutch_audio(show):
+                    continue
+                transformed = _sa_transform_show(show)
+                if not transformed["platforms"]:
+                    continue
+                sid = transformed["id"]
+                if sid not in merged:
+                    merged[sid] = transformed
+                    for p in transformed["platforms"]:
+                        sn = p["shortName"]
+                        if sn in counts:
+                            counts[sn] += 1
+
+            cursor = next_cursor
+            if not cursor:
+                logger.info("SA: Reached end of catalog after %d requests", requests_used)
+                break
+            await asyncio.sleep(0.3)
+
+    logger.info("SA: %d requests used, %d Dutch audio titles found", requests_used, len(merged))
+    # Return None cursor if we finished the catalog, otherwise return cursor to resume later
+    return merged, counts, cursor if cursor else None
+
+
+# ---------------------------------------------------------------------------
+# Merged refresh
+# ---------------------------------------------------------------------------
+
+
+async def _fetch_all() -> tuple[list[dict], dict[str, int]]:
+    """Fetch from both JustWatch and Streaming Availability, merge results."""
+    # Fetch from JustWatch (primary source — has rich metadata)
+    jw_merged, jw_counts = await _jw_fetch_all()
+    logger.info("JW total: %d Dutch audio titles", len(jw_merged))
+
+    # Fetch from Streaming Availability (fills gaps, especially Netflix)
+    sa_cursor = _get_sa_cursor()
+    sa_merged, sa_counts, new_cursor = await _sa_fetch_all(resume_cursor=sa_cursor)
+    logger.info("SA total: %d Dutch audio titles", len(sa_merged))
+    _set_sa_cursor(new_cursor)
+
+    # Merge: SA titles supplement JustWatch. Match by imdbId where possible.
+    jw_by_imdb: dict[str, str] = {}
+    for oid, title in jw_merged.items():
+        imdb = title.get("imdbId")
+        if imdb:
+            jw_by_imdb[imdb] = oid
+
+    added_from_sa = 0
+    merged_platforms_from_sa = 0
+    for sa_id, sa_title in sa_merged.items():
+        imdb = sa_title.get("imdbId")
+        jw_oid = jw_by_imdb.get(imdb) if imdb else None
+
+        if jw_oid and jw_oid in jw_merged:
+            # Title exists in JustWatch — merge any missing platforms
+            existing_shorts = {p["shortName"] for p in jw_merged[jw_oid]["platforms"]}
+            for plat in sa_title["platforms"]:
+                if plat["shortName"] not in existing_shorts:
+                    jw_merged[jw_oid]["platforms"].append(plat)
+                    merged_platforms_from_sa += 1
+        else:
+            # New title only in SA — add it
+            jw_merged[sa_id] = sa_title
+            added_from_sa += 1
+
+    logger.info("Merge: %d new titles from SA, %d platforms added to existing titles",
+                added_from_sa, merged_platforms_from_sa)
+
+    # Combine counts
+    counts = {}
+    for p in PROVIDERS:
+        counts[p] = jw_counts.get(p, 0) + sa_counts.get(p, 0)
+
+    titles = sorted(jw_merged.values(), key=lambda t: t.get("imdbScore") or 0, reverse=True)
     return titles, counts
 
 
@@ -366,6 +592,28 @@ def _save_to_db(titles: list[dict], counts: dict[str, int]) -> None:
         )
 
 
+def _get_sa_cursor() -> str | None:
+    """Get the saved SA pagination cursor for incremental fetching."""
+    try:
+        with sqlite3.connect(DB_PATH) as con:
+            row = con.execute("SELECT value FROM meta WHERE key = 'sa_cursor'").fetchone()
+            return row[0] if row else None
+    except Exception:
+        return None
+
+
+def _set_sa_cursor(cursor: str | None) -> None:
+    """Save the SA pagination cursor for next refresh."""
+    with sqlite3.connect(DB_PATH) as con:
+        if cursor:
+            con.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                ("sa_cursor", cursor),
+            )
+        else:
+            con.execute("DELETE FROM meta WHERE key = 'sa_cursor'")
+
+
 # ---------------------------------------------------------------------------
 # In-memory cache (loaded from DB on startup, updated after refresh)
 # ---------------------------------------------------------------------------
@@ -375,10 +623,10 @@ _refresh_status: dict = {"running": False, "error": None}
 
 
 async def _refresh_and_persist() -> None:
-    """Fetch from JustWatch, update DB and in-memory cache."""
+    """Fetch from both APIs, update DB and in-memory cache."""
     _refresh_status["error"] = None
     try:
-        logger.info("Refreshing from JustWatch API...")
+        logger.info("Refreshing from JustWatch + Streaming Availability APIs...")
         start = time.time()
         titles, counts = await _fetch_all()
         if not titles:
