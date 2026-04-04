@@ -100,16 +100,7 @@
   .pill[data-provider="amz"].active   { background: #00A8E1; border-color: #00A8E1; }
   .pill[data-provider="atp"].active,
   .pill[data-provider="itu"].active   { background: #333;    border-color: #555; }
-  .pill[data-provider="mxx"].active,
-  .pill[data-provider="aho"].active   { background: #b432d9; border-color: #b432d9; }
-  .pill[data-provider="wki"].active   { background: #c41b68; border-color: #c41b68; }
-  .pill[data-provider="tel"].active   { background: #ff6600; border-color: #ff6600; }
-  .pills-sep {
-    width: 1px;
-    height: 24px;
-    background: #333;
-    flex-shrink: 0;
-  }
+  .pill[data-provider="mxx"].active   { background: #b432d9; border-color: #b432d9; }
   .type-toggle {
     display: flex;
     border: 2px solid #444;
@@ -416,19 +407,6 @@
     { short: 'prv', label: 'Prime Video' },
     { short: 'atp', label: 'Apple TV+' },
     { short: 'mxx', label: 'HBO Max' },
-    // Separator
-    null,
-    // Buy/rent & other
-    { short: 'amz', label: 'Amazon' },
-    { short: 'itu', label: 'Apple Store' },
-    { short: 'wki', label: 'Rakuten TV' },
-    { short: 'ply', label: 'Google Play' },
-    { short: 'tel', label: 'Telenet' },
-    { short: 'aho', label: 'HBO (Amazon)' },
-    { short: 'avl', label: 'Apple (Amazon)' },
-    { short: 'snr', label: 'Sooner' },
-    { short: 'cim', label: 'CineMember' },
-    { short: 'vpy', label: 'Viaplay' },
   ];
   let activeProviders = loadProviderPrefs();
   let activeType = 'ALL';
