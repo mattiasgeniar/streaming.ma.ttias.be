@@ -83,20 +83,33 @@
   .pill {
     padding: 6px 14px;
     border-radius: 20px;
-    border: 2px solid #444;
+    border: 2px solid #333;
     background: transparent;
-    color: #ccc;
+    color: #555;
     font-size: .85rem;
     cursor: pointer;
     transition: all .15s;
     font-weight: 600;
+    opacity: .5;
   }
-  .pill:hover { border-color: #888; color: #fff; }
-  .pill.active { color: #fff; }
+  .pill:hover { opacity: .75; border-color: #666; }
+  .pill.active { color: #fff; background: #555; border-color: #555; opacity: 1; }
   .pill[data-provider="nfx"].active   { background: #E50914; border-color: #E50914; }
   .pill[data-provider="dnp"].active   { background: #0063e5; border-color: #0063e5; }
-  .pill[data-provider="prv"].active   { background: #00A8E1; border-color: #00A8E1; }
-  .pill[data-provider="atp"].active   { background: #333;    border-color: #555; }
+  .pill[data-provider="prv"].active,
+  .pill[data-provider="amz"].active   { background: #00A8E1; border-color: #00A8E1; }
+  .pill[data-provider="atp"].active,
+  .pill[data-provider="itu"].active   { background: #333;    border-color: #555; }
+  .pill[data-provider="mxx"].active,
+  .pill[data-provider="aho"].active   { background: #b432d9; border-color: #b432d9; }
+  .pill[data-provider="wki"].active   { background: #c41b68; border-color: #c41b68; }
+  .pill[data-provider="tel"].active   { background: #ff6600; border-color: #ff6600; }
+  .pills-sep {
+    width: 1px;
+    height: 24px;
+    background: #333;
+    flex-shrink: 0;
+  }
   .type-toggle {
     display: flex;
     border: 2px solid #444;
@@ -354,10 +367,7 @@
 </header>
 
 <div class="filter-bar">
-  <button class="pill active" data-provider="nfx">Netflix</button>
-  <button class="pill active" data-provider="dnp">Disney+</button>
-  <button class="pill active" data-provider="prv">Prime Video</button>
-  <button class="pill active" data-provider="atp">Apple TV+</button>
+  <span id="providerPills"></span>
   <div class="type-toggle">
     <button class="type-btn active" data-type="ALL">All</button>
     <button class="type-btn" data-type="MOVIE">Movies</button>
@@ -397,9 +407,45 @@
 <script>
 (function() {
   let allTitles = [];
-  let activeProviders = new Set(['nfx', 'dnp', 'prv', 'atp']);
+  var DEFAULT_PROVIDERS = ['nfx', 'dnp', 'prv', 'atp'];
+  // Provider display config: order, label, group
+  var PROVIDER_CONFIG = [
+    // Main streaming subscriptions
+    { short: 'nfx', label: 'Netflix' },
+    { short: 'dnp', label: 'Disney+' },
+    { short: 'prv', label: 'Prime Video' },
+    { short: 'atp', label: 'Apple TV+' },
+    { short: 'mxx', label: 'HBO Max' },
+    // Separator
+    null,
+    // Buy/rent & other
+    { short: 'amz', label: 'Amazon' },
+    { short: 'itu', label: 'Apple Store' },
+    { short: 'wki', label: 'Rakuten TV' },
+    { short: 'ply', label: 'Google Play' },
+    { short: 'tel', label: 'Telenet' },
+    { short: 'aho', label: 'HBO (Amazon)' },
+    { short: 'avl', label: 'Apple (Amazon)' },
+    { short: 'snr', label: 'Sooner' },
+    { short: 'cim', label: 'CineMember' },
+    { short: 'vpy', label: 'Viaplay' },
+  ];
+  let activeProviders = loadProviderPrefs();
   let activeType = 'ALL';
   let searchQuery = '';
+
+  function loadProviderPrefs() {
+    try {
+      var saved = localStorage.getItem('activeProviders');
+      if (saved) return new Set(JSON.parse(saved));
+    } catch (e) {}
+    return new Set(DEFAULT_PROVIDERS);
+  }
+  function saveProviderPrefs() {
+    try {
+      localStorage.setItem('activeProviders', JSON.stringify(Array.from(activeProviders)));
+    } catch (e) {}
+  }
 
   const grid = document.getElementById('grid');
   const loading = document.getElementById('loading');
@@ -463,6 +509,7 @@
       allTitles = titles;
       loading.style.display = 'none';
       updateStatus(status);
+      buildProviderPills();
 
       if (!titles.length) {
         loading.style.display = '';
@@ -630,20 +677,46 @@
   modalOverlay.onclick = function(e) { if (e.target === modalOverlay) closeModal(); };
   document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeModal(); });
 
-  // ---------- Filter events ----------
-  document.querySelectorAll('.pill[data-provider]').forEach(function(btn) {
-    btn.onclick = function() {
-      var p = btn.dataset.provider;
-      if (activeProviders.has(p)) {
-        activeProviders.delete(p);
-        btn.classList.remove('active');
-      } else {
-        activeProviders.add(p);
-        btn.classList.add('active');
+  // ---------- Provider pills (dynamic) ----------
+  function buildProviderPills() {
+    var container = document.getElementById('providerPills');
+    container.textContent = '';
+    // Count titles per platform
+    var platCounts = {};
+    for (var i = 0; i < allTitles.length; i++) {
+      for (var j = 0; j < allTitles[i].platforms.length; j++) {
+        var sn = allTitles[i].platforms[j].shortName;
+        platCounts[sn] = (platCounts[sn] || 0) + 1;
       }
-      render();
-    };
-  });
+    }
+    PROVIDER_CONFIG.forEach(function(cfg) {
+      if (cfg === null) {
+        // Separator
+        var sep = document.createElement('span');
+        sep.className = 'pills-sep';
+        container.appendChild(sep);
+        return;
+      }
+      if (!platCounts[cfg.short]) return; // skip platforms with 0 titles
+      var btn = document.createElement('button');
+      btn.className = 'pill';
+      btn.dataset.provider = cfg.short;
+      btn.textContent = cfg.label;
+      if (activeProviders.has(cfg.short)) btn.classList.add('active');
+      btn.onclick = function() {
+        if (activeProviders.has(cfg.short)) {
+          activeProviders.delete(cfg.short);
+          btn.classList.remove('active');
+        } else {
+          activeProviders.add(cfg.short);
+          btn.classList.add('active');
+        }
+        saveProviderPrefs();
+        render();
+      };
+      container.appendChild(btn);
+    });
+  }
 
   document.querySelectorAll('.type-btn').forEach(function(btn) {
     btn.onclick = function() {
@@ -698,6 +771,7 @@
             fetch('/api/titles').then(function(r) { return r.json(); }).then(function(titles) {
               allTitles = titles;
               loading.style.display = 'none';
+              buildProviderPills();
               showToast('Refreshed! ' + titles.length + ' titles loaded');
               render();
             });
