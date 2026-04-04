@@ -34,8 +34,9 @@ LANGUAGE = "nl"
 PAGE_SIZE = 100
 MAX_OFFSET = 1900  # offset + count must stay < 2000
 PAGE_DELAY = 0.5  # seconds between pages per provider
-REFRESH_COOLDOWN = 24 * 60 * 60  # 24 hours
+REFRESH_COOLDOWN = 23 * 60 * 60  # 23 hours (allows daily cron with some drift)
 DB_PATH = Path(__file__).parent / "titles.db"
+REFRESH_SECRET = os.getenv("REFRESH_SECRET", "")
 
 PROVIDERS = {
     "nfx": {"name": "Netflix", "color": "#E50914"},
@@ -490,18 +491,38 @@ async def _sa_fetch_all(resume_cursor: str | None = None) -> tuple[dict[str, dic
 
 
 async def _fetch_all() -> tuple[list[dict], dict[str, int]]:
-    """Fetch from both JustWatch and Streaming Availability, merge results."""
+    """Fetch from both JustWatch and Streaming Availability, merge results.
+
+    JustWatch: full rescan every time (handles removals naturally).
+    SA: paginate incrementally across refreshes. When the cursor reaches the end
+    (full cycle complete), stale SA-only titles are dropped on the next cycle.
+    """
     # Fetch from JustWatch (primary source — has rich metadata)
     jw_merged, jw_counts = await _jw_fetch_all()
     logger.info("JW total: %d Dutch audio titles", len(jw_merged))
 
-    # Fetch from Streaming Availability (fills gaps, especially Netflix)
-    sa_cursor = _get_sa_cursor()
-    sa_merged, sa_counts, new_cursor = await _sa_fetch_all(resume_cursor=sa_cursor)
-    logger.info("SA total: %d Dutch audio titles", len(sa_merged))
-    _set_sa_cursor(new_cursor)
+    # Load previously accumulated SA titles from DB
+    existing_sa = _load_sa_titles_from_db()
+    logger.info("SA existing: %d titles from previous scans", len(existing_sa))
 
-    # Merge: SA titles supplement JustWatch. Match by imdbId where possible.
+    # Fetch new SA pages (incremental)
+    sa_cursor = _get_sa_cursor()
+    sa_new, sa_counts, new_cursor = await _sa_fetch_all(resume_cursor=sa_cursor)
+    logger.info("SA new: %d Dutch audio titles from this scan", len(sa_new))
+
+    # Merge new SA titles into existing SA collection
+    existing_sa.update(sa_new)
+
+    if new_cursor is None and sa_cursor is not None:
+        # Full cycle completed — we've seen the entire SA catalog.
+        # On the NEXT refresh, we start fresh (existing_sa will be rebuilt from scratch).
+        # For now, keep everything we found in this completed cycle.
+        logger.info("SA: Full catalog scan completed! %d total SA titles", len(existing_sa))
+
+    _set_sa_cursor(new_cursor)
+    _save_sa_titles_to_db(existing_sa)
+
+    # Merge SA into JW: match by imdbId where possible
     jw_by_imdb: dict[str, str] = {}
     for oid, title in jw_merged.items():
         imdb = title.get("imdbId")
@@ -510,7 +531,7 @@ async def _fetch_all() -> tuple[list[dict], dict[str, int]]:
 
     added_from_sa = 0
     merged_platforms_from_sa = 0
-    for sa_id, sa_title in sa_merged.items():
+    for sa_id, sa_title in existing_sa.items():
         imdb = sa_title.get("imdbId")
         jw_oid = jw_by_imdb.get(imdb) if imdb else None
 
@@ -526,7 +547,7 @@ async def _fetch_all() -> tuple[list[dict], dict[str, int]]:
             jw_merged[sa_id] = sa_title
             added_from_sa += 1
 
-    logger.info("Merge: %d new titles from SA, %d platforms added to existing titles",
+    logger.info("Merge: %d SA-only titles, %d platforms added to existing titles",
                 added_from_sa, merged_platforms_from_sa)
 
     # Combine counts
@@ -547,6 +568,12 @@ def _init_db() -> None:
     with sqlite3.connect(DB_PATH) as con:
         con.execute("""
             CREATE TABLE IF NOT EXISTS titles (
+                id TEXT PRIMARY KEY,
+                data TEXT NOT NULL
+            )
+        """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS sa_titles (
                 id TEXT PRIMARY KEY,
                 data TEXT NOT NULL
             )
@@ -611,7 +638,29 @@ def _set_sa_cursor(cursor: str | None) -> None:
                 ("sa_cursor", cursor),
             )
         else:
+            # Cursor is None = full cycle completed. Clear SA titles so next
+            # cycle rebuilds from scratch (removes stale titles).
             con.execute("DELETE FROM meta WHERE key = 'sa_cursor'")
+            con.execute("DELETE FROM sa_titles")
+            logger.info("SA: Cleared accumulated SA titles (full cycle done, next refresh starts fresh)")
+
+
+def _load_sa_titles_from_db() -> dict[str, dict]:
+    """Load previously accumulated SA-only titles."""
+    with sqlite3.connect(DB_PATH) as con:
+        rows = con.execute("SELECT id, data FROM sa_titles").fetchall()
+    return {r[0]: json.loads(r[1]) for r in rows}
+
+
+def _save_sa_titles_to_db(sa_titles: dict[str, dict]) -> None:
+    """Save accumulated SA titles for next refresh."""
+    with sqlite3.connect(DB_PATH) as con:
+        con.execute("DELETE FROM sa_titles")
+        if sa_titles:
+            con.executemany(
+                "INSERT INTO sa_titles (id, data) VALUES (?, ?)",
+                [(sid, json.dumps(data)) for sid, data in sa_titles.items()],
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -680,15 +729,17 @@ async def api_titles():
 
 @app.post("/api/refresh")
 async def api_refresh(request: Request):
-    # CSRF protection: require header that triggers CORS preflight
-    if not request.headers.get("x-requested-with"):
+    # Auth: either CSRF header (browser) or secret token (cron)
+    token = request.headers.get("x-refresh-secret", "")
+    is_cron = REFRESH_SECRET and token == REFRESH_SECRET
+    if not is_cron and not request.headers.get("x-requested-with"):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     if _refresh_status["running"]:
         return {"status": "already_running"}
 
-    # 24-hour cooldown
-    if _cache["updated_at"] and time.time() - _cache["updated_at"] < REFRESH_COOLDOWN:
+    # Cooldown (cron bypasses)
+    if not is_cron and _cache["updated_at"] and time.time() - _cache["updated_at"] < REFRESH_COOLDOWN:
         remaining = int(REFRESH_COOLDOWN - (time.time() - _cache["updated_at"]))
         hours = remaining // 3600
         mins = (remaining % 3600) // 60
