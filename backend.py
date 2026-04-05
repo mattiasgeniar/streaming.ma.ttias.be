@@ -885,6 +885,16 @@ async def index():
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/robots.txt")
+async def robots():
+    return FileResponse(STATIC_DIR / "robots.txt", media_type="text/plain")
+
+
+@app.get("/sitemap.xml")
+async def sitemap():
+    return FileResponse(STATIC_DIR / "sitemap.xml", media_type="application/xml")
+
+
 @app.get("/api/titles")
 async def api_titles():
     return _cache["titles"]
