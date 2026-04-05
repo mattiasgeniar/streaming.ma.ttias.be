@@ -859,19 +859,26 @@ async def _refresh_and_persist() -> None:
         _refresh_status["running"] = False
 
 
+def _needs_image_work(title: dict) -> bool:
+    """Check if a title needs downloading (http URLs) or WebP conversion (.jpg paths)."""
+    for k in ("posterUrl", "backdropUrl"):
+        url = title.get(k) or ""
+        if url.startswith("http") or url.endswith(".jpg"):
+            return True
+    return False
+
+
 async def _backfill_images() -> None:
-    """Download images for cached titles that still have external URLs (first deploy)."""
+    """Download images with external URLs and convert any remaining JPEGs to WebP."""
     titles = _cache["titles"]
-    need_download = [t for t in titles if any(
-        (t.get(k) or "").startswith("http") for k in ("posterUrl", "backdropUrl")
-    )]
-    if not need_download:
-        logger.info("Backfill: all images already local")
+    need_work = [t for t in titles if _needs_image_work(t)]
+    if not need_work:
+        logger.info("Backfill: all images already local WebP")
         return
-    logger.info("Backfill: downloading images for %d titles", len(need_download))
-    await _download_all_images(need_download)
+    logger.info("Backfill: processing %d titles (download + WebP conversion)", len(need_work))
+    await _download_all_images(need_work)
     await asyncio.to_thread(_save_to_db, _cache["titles"], _cache["counts"])
-    logger.info("Backfill: complete, DB updated with local paths")
+    logger.info("Backfill: complete, DB updated with local WebP paths")
 
 
 # ---------------------------------------------------------------------------
@@ -888,11 +895,7 @@ async def lifespan(app: FastAPI):
     _cache["updated_at"] = updated_at
     logger.info("Loaded %d titles from DB (last updated %.0fs ago)",
                 len(titles), time.time() - updated_at if updated_at else 0)
-    if titles and any(
-        (t.get("posterUrl") or "").startswith("http")
-        or (t.get("backdropUrl") or "").startswith("http")
-        for t in titles
-    ):
+    if titles and any(_needs_image_work(t) for t in titles):
         asyncio.create_task(_backfill_images())
     yield
 
