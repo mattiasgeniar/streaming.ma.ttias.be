@@ -42,7 +42,7 @@
   }
   #status {
     font-size: .8rem;
-    color: #888;
+    color: #999;
     margin-left: auto;
     display: flex;
     align-items: center;
@@ -79,25 +79,25 @@
     gap: 10px;
     flex-wrap: wrap;
     border-bottom: 1px solid #222;
+    min-height: 52px;
   }
   .pill {
     padding: 6px 14px;
     border-radius: 20px;
-    border: 2px solid #333;
+    border: 2px solid #444;
     background: transparent;
-    color: #555;
+    color: #999;
     font-size: .85rem;
     cursor: pointer;
     transition: all .15s;
     font-weight: 600;
-    opacity: .5;
   }
-  .pill:hover { opacity: .75; border-color: #666; }
+  .pill:hover { border-color: #666; color: #bbb; }
   .pill.active { color: #fff; background: #555; border-color: #555; opacity: 1; }
   .pill[data-provider="nfx"].active   { background: #E50914; border-color: #E50914; }
   .pill[data-provider="dnp"].active   { background: #0063e5; border-color: #0063e5; }
   .pill[data-provider="prv"].active,
-  .pill[data-provider="amz"].active   { background: #00A8E1; border-color: #00A8E1; }
+  .pill[data-provider="amz"].active   { background: #007099; border-color: #007099; }
   .pill[data-provider="atp"].active,
   .pill[data-provider="itu"].active   { background: #333;    border-color: #555; }
   .pill[data-provider="mxx"].active   { background: #b432d9; border-color: #b432d9; }
@@ -132,7 +132,7 @@
     transition: border-color .15s;
   }
   .search-box:focus { border-color: #888; }
-  .search-box::placeholder { color: #666; }
+  .search-box::placeholder { color: #999; }
 
   /* ---------- Poster grid ---------- */
   .grid {
@@ -159,6 +159,7 @@
     height: 100%;
     object-fit: cover;
     display: block;
+    aspect-ratio: 2/3;
   }
   .card .badges {
     position: absolute;
@@ -283,10 +284,15 @@
   .platform-btn[data-provider="atp"]   { background: #333; }
 
   /* ---------- Loading ---------- */
+  main { position: relative; min-height: 60vh; }
   .loading {
-    text-align: center;
-    padding: 60px 20px;
-    color: #666;
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: #999;
     font-size: 1.1rem;
   }
   .loading .spinner {
@@ -303,22 +309,23 @@
   /* ---------- Count ---------- */
   .results-count {
     padding: 0 24px;
-    color: #666;
+    color: #999;
     font-size: .8rem;
+    min-height: 1.2em;
   }
 
   /* ---------- Footer ---------- */
   footer {
     padding: 40px 24px 24px;
     text-align: center;
-    color: #555;
+    color: #999;
     font-size: .8rem;
     display: flex;
     justify-content: center;
     gap: 6px;
   }
   footer a {
-    color: #888;
+    color: #aaa;
     text-decoration: none;
   }
   footer a:hover { color: #fff; }
@@ -367,12 +374,15 @@
   <input type="text" class="search-box" placeholder="Search titles..." id="searchInput">
 </div>
 
+<main>
 <div class="results-count" id="resultsCount"></div>
 <div class="grid" id="grid"></div>
 <div class="loading" id="loading">
   <div class="spinner"></div>
   Loading Dutch audio titles...
 </div>
+
+</main>
 
 <div class="modal-overlay" id="modalOverlay">
   <div class="modal" id="modal">
@@ -398,6 +408,10 @@
 <script>
 (function() {
   let allTitles = [];
+  var BATCH_SIZE = 60;
+  var currentBatch = 0;
+  var currentFiltered = [];
+  var batchObserver = null;
   var DEFAULT_PROVIDERS = ['nfx', 'dnp', 'prv', 'atp'];
   // Provider display config: order, label, group
   var PROVIDER_CONFIG = [
@@ -518,14 +532,25 @@
   }
 
   function render() {
-    var filtered = getFiltered();
-    resultsCount.textContent = filtered.length + ' titles';
+    currentFiltered = getFiltered();
+    currentBatch = 0;
+    resultsCount.textContent = currentFiltered.length + ' titles';
+    grid.textContent = '';
+    if (batchObserver) { batchObserver.disconnect(); batchObserver = null; }
+    var oldSentinel = document.getElementById('sentinel');
+    if (oldSentinel) oldSentinel.remove();
+    renderBatch();
+    setupSentinel();
+  }
 
-    var toRender = filtered.slice(0, 500);
+  function renderBatch() {
+    var start = currentBatch * BATCH_SIZE;
+    var end = Math.min(start + BATCH_SIZE, currentFiltered.length);
+    if (start >= currentFiltered.length) return;
     var frag = document.createDocumentFragment();
 
-    for (var i = 0; i < toRender.length; i++) {
-      var title = toRender[i];
+    for (var i = start; i < end; i++) {
+      var title = currentFiltered[i];
       var card = document.createElement('div');
       card.className = 'card';
       card.onclick = (function(t) { return function() { openModal(t); }; })(title);
@@ -535,7 +560,10 @@
         img.src = title.posterThumbUrl || title.posterUrl;
         img.alt = (title.title || '') + (title.year ? ' (' + title.year + ')' : '') + ' - Dutch audio streaming';
         img.title = title.title || '';
-        img.loading = 'lazy';
+        if (i >= 8) img.loading = 'lazy';
+        if (i === 0) img.fetchPriority = 'high';
+        img.width = 332;
+        img.height = 498;
         card.appendChild(img);
       }
 
@@ -574,12 +602,26 @@
       frag.appendChild(card);
     }
 
-    grid.textContent = '';
     grid.appendChild(frag);
+    currentBatch++;
+  }
 
-    if (filtered.length > 500) {
-      resultsCount.textContent = 'Showing 500 of ' + filtered.length + ' titles';
-    }
+  function setupSentinel() {
+    if (currentBatch * BATCH_SIZE >= currentFiltered.length) return;
+    var sentinel = document.createElement('div');
+    sentinel.id = 'sentinel';
+    sentinel.style.height = '1px';
+    grid.parentNode.insertBefore(sentinel, grid.nextSibling);
+    batchObserver = new IntersectionObserver(function(entries) {
+      if (entries[0].isIntersecting) {
+        renderBatch();
+        if (currentBatch * BATCH_SIZE >= currentFiltered.length) {
+          batchObserver.disconnect();
+          sentinel.remove();
+        }
+      }
+    }, { rootMargin: '400px' });
+    batchObserver.observe(sentinel);
   }
 
   // ---------- Modal ----------

@@ -217,21 +217,30 @@ THUMB_WIDTH = 332  # ~2x for 150px grid cards on retina displays
 
 
 def _resize_to_thumb(src: Path, dest: Path) -> bool:
-    """Resize poster to thumbnail width, preserving aspect ratio."""
+    """Resize poster to thumbnail width, preserving aspect ratio. Saves as WebP."""
     try:
         with Image.open(src) as img:
             if img.width <= THUMB_WIDTH:
-                # Already small enough — just copy
-                import shutil
-                shutil.copy2(src, dest)
+                img.save(dest, "WEBP", quality=82)
                 return True
             ratio = THUMB_WIDTH / img.width
             new_h = int(img.height * ratio)
             resized = img.resize((THUMB_WIDTH, new_h), Image.LANCZOS)
-            resized.save(dest, "JPEG", quality=85)
+            resized.save(dest, "WEBP", quality=82)
             return True
     except Exception:
         logger.warning("Failed to resize %s", src)
+        return False
+
+
+def _convert_to_webp(src: Path, dest: Path, quality: int = 82) -> bool:
+    """Convert an image file to WebP format."""
+    try:
+        with Image.open(src) as img:
+            img.save(dest, "WEBP", quality=quality)
+            return True
+    except Exception:
+        logger.warning("Failed to convert %s to WebP", src)
         return False
 
 
@@ -257,34 +266,46 @@ async def _download_image(
 async def _ensure_title_images(
     client: httpx.AsyncClient, title: dict, sem: asyncio.Semaphore,
 ) -> None:
-    """Download poster and backdrop, generate thumb by resizing poster locally."""
+    """Download poster and backdrop, convert to WebP, generate thumb."""
     fname = _image_filename(title)
     poster_url = title.get("posterUrl")
     backdrop_url = title.get("backdropUrl")
 
-    poster_dest = POSTER_DIR / f"{fname}.jpg"
-    thumb_dest = POSTER_THUMB_DIR / f"{fname}.jpg"
-    backdrop_dest = BACKDROP_DIR / f"{fname}.jpg"
+    # Download originals (source format from CDN)
+    poster_src = POSTER_DIR / f"{fname}.jpg"
+    backdrop_src = BACKDROP_DIR / f"{fname}.jpg"
+    # WebP conversions
+    poster_webp = POSTER_DIR / f"{fname}.webp"
+    thumb_webp = POSTER_THUMB_DIR / f"{fname}.webp"
+    backdrop_webp = BACKDROP_DIR / f"{fname}.webp"
 
     coros: list = []
     if poster_url and poster_url.startswith("http"):
-        coros.append(_download_image(client, poster_url, poster_dest, sem))
+        coros.append(_download_image(client, poster_url, poster_src, sem))
     if backdrop_url and backdrop_url.startswith("http"):
-        coros.append(_download_image(client, backdrop_url, backdrop_dest, sem))
+        coros.append(_download_image(client, backdrop_url, backdrop_src, sem))
 
     if coros:
         await asyncio.gather(*coros, return_exceptions=True)
 
-    # Generate thumbnail from downloaded poster
-    if poster_dest.exists() and not thumb_dest.exists():
-        await asyncio.to_thread(_resize_to_thumb, poster_dest, thumb_dest)
+    # Convert to WebP and generate thumb
+    if poster_src.exists() and not poster_webp.exists():
+        await asyncio.to_thread(_convert_to_webp, poster_src, poster_webp)
+    if poster_src.exists() and not thumb_webp.exists():
+        await asyncio.to_thread(_resize_to_thumb, poster_src, thumb_webp)
+    if backdrop_src.exists() and not backdrop_webp.exists():
+        await asyncio.to_thread(_convert_to_webp, backdrop_src, backdrop_webp)
 
-    # Rewrite URLs to local paths — keep original http URL on failure (retried on next startup)
-    if poster_dest.exists():
+    # Rewrite URLs to local WebP paths — keep original http URL on failure
+    if poster_webp.exists():
+        title["posterUrl"] = f"/static/images/posters/{fname}.webp"
+    elif poster_src.exists():
         title["posterUrl"] = f"/static/images/posters/{fname}.jpg"
-    if thumb_dest.exists():
-        title["posterThumbUrl"] = f"/static/images/posters/thumbs/{fname}.jpg"
-    if backdrop_dest.exists():
+    if thumb_webp.exists():
+        title["posterThumbUrl"] = f"/static/images/posters/thumbs/{fname}.webp"
+    if backdrop_webp.exists():
+        title["backdropUrl"] = f"/static/images/backdrops/{fname}.webp"
+    elif backdrop_src.exists():
         title["backdropUrl"] = f"/static/images/backdrops/{fname}.jpg"
 
     for p in title.get("platforms", []):
@@ -882,7 +903,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 @app.get("/")
 async def index():
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "public, max-age=3600"})
 
 
 @app.get("/robots.txt")
