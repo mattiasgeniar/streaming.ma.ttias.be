@@ -530,10 +530,11 @@
       card.className = 'card';
       card.onclick = (function(t) { return function() { openModal(t); }; })(title);
 
-      if (title.posterUrl) {
+      if (title.posterThumbUrl || title.posterUrl) {
         var img = document.createElement('img');
-        img.src = title.posterUrl;
-        img.alt = title.title || '';
+        img.src = title.posterThumbUrl || title.posterUrl;
+        img.alt = (title.title || '') + (title.year ? ' (' + title.year + ')' : '') + ' - Dutch audio streaming';
+        img.title = title.title || '';
         img.loading = 'lazy';
         card.appendChild(img);
       }
@@ -549,6 +550,7 @@
           var bIcon = document.createElement('img');
           bIcon.src = p.icon;
           bIcon.alt = p.name;
+          bIcon.title = p.name;
           badge.appendChild(bIcon);
         }
         badges.appendChild(badge);
@@ -597,6 +599,7 @@
     var backdrop = document.getElementById('modalBackdrop');
     if (title.backdropUrl) {
       backdrop.src = title.backdropUrl;
+      backdrop.alt = (title.title || '') + ' backdrop';
       backdrop.style.display = 'block';
     } else {
       backdrop.style.display = 'none';
@@ -635,7 +638,7 @@
       if (p.icon) {
         var pIcon = document.createElement('img');
         pIcon.src = p.icon;
-        pIcon.alt = '';
+        pIcon.alt = p.name;
         a.appendChild(pIcon);
       }
       a.appendChild(document.createTextNode('Watch on ' + p.name));

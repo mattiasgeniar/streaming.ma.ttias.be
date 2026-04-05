@@ -4,14 +4,17 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
+import unicodedata
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import httpx
 from dotenv import load_dotenv
+from PIL import Image
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -37,6 +40,20 @@ PAGE_DELAY = 0.5  # seconds between pages per provider
 REFRESH_COOLDOWN = 23 * 60 * 60  # 23 hours (allows daily cron with some drift)
 DB_PATH = Path(__file__).parent / "titles.db"
 REFRESH_SECRET = os.getenv("REFRESH_SECRET", "")
+
+IMAGE_DIR = STATIC_DIR / "images"
+POSTER_DIR = IMAGE_DIR / "posters"
+POSTER_THUMB_DIR = POSTER_DIR / "thumbs"
+BACKDROP_DIR = IMAGE_DIR / "backdrops"
+ICON_DIR = IMAGE_DIR / "icons"
+DOWNLOAD_CONCURRENCY = 8
+
+PROVIDER_ICON_FILENAMES = {
+    "nfx": "netflix.png",
+    "dnp": "disneyplus.png",
+    "prv": "amazonprimevideo.png",
+    "atp": "appletvplus.png",
+}
 
 PROVIDERS = {
     "nfx": {"name": "Netflix", "color": "#E50914"},
@@ -176,6 +193,130 @@ def _resolve_image_url(raw: str | None) -> str | None:
     if raw.startswith("http"):
         return raw
     return IMAGE_BASE + raw
+
+
+# ---------------------------------------------------------------------------
+# Image download pipeline
+# ---------------------------------------------------------------------------
+
+
+def _slugify(text: str) -> str:
+    """Unicode normalize -> ASCII -> lowercase -> replace non-alnum with hyphens -> truncate."""
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+    text = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return text[:80]
+
+
+def _image_filename(title: dict) -> str:
+    """Return SEO-friendly filename like 'the-matrix-tm12345'."""
+    slug = _slugify(title.get("title", "") or "untitled")
+    return f"{slug}-{title['id']}" if slug else str(title["id"])
+
+
+THUMB_WIDTH = 332  # ~2x for 150px grid cards on retina displays
+
+
+def _resize_to_thumb(src: Path, dest: Path) -> bool:
+    """Resize poster to thumbnail width, preserving aspect ratio."""
+    try:
+        with Image.open(src) as img:
+            if img.width <= THUMB_WIDTH:
+                # Already small enough — just copy
+                import shutil
+                shutil.copy2(src, dest)
+                return True
+            ratio = THUMB_WIDTH / img.width
+            new_h = int(img.height * ratio)
+            resized = img.resize((THUMB_WIDTH, new_h), Image.LANCZOS)
+            resized.save(dest, "JPEG", quality=85)
+            return True
+    except Exception:
+        logger.warning("Failed to resize %s", src)
+        return False
+
+
+async def _download_image(
+    client: httpx.AsyncClient, url: str, dest: Path, sem: asyncio.Semaphore,
+) -> bool:
+    """Download image to dest with atomic write. Skips if file already exists."""
+    if dest.exists():
+        return True
+    async with sem:
+        try:
+            resp = await client.get(url, timeout=15, follow_redirects=True)
+            resp.raise_for_status()
+            tmp = dest.with_suffix(f".tmp{os.getpid()}")
+            tmp.write_bytes(resp.content)
+            tmp.rename(dest)
+            return True
+        except Exception:
+            logger.warning("Failed to download image: %s", url)
+            return False
+
+
+async def _ensure_title_images(
+    client: httpx.AsyncClient, title: dict, sem: asyncio.Semaphore,
+) -> None:
+    """Download poster and backdrop, generate thumb by resizing poster locally."""
+    fname = _image_filename(title)
+    poster_url = title.get("posterUrl")
+    backdrop_url = title.get("backdropUrl")
+
+    poster_dest = POSTER_DIR / f"{fname}.jpg"
+    thumb_dest = POSTER_THUMB_DIR / f"{fname}.jpg"
+    backdrop_dest = BACKDROP_DIR / f"{fname}.jpg"
+
+    coros: list = []
+    if poster_url and poster_url.startswith("http"):
+        coros.append(_download_image(client, poster_url, poster_dest, sem))
+    if backdrop_url and backdrop_url.startswith("http"):
+        coros.append(_download_image(client, backdrop_url, backdrop_dest, sem))
+
+    if coros:
+        await asyncio.gather(*coros, return_exceptions=True)
+
+    # Generate thumbnail from downloaded poster
+    if poster_dest.exists() and not thumb_dest.exists():
+        await asyncio.to_thread(_resize_to_thumb, poster_dest, thumb_dest)
+
+    # Rewrite URLs to local paths — keep original http URL on failure (retried on next startup)
+    if poster_dest.exists():
+        title["posterUrl"] = f"/static/images/posters/{fname}.jpg"
+    if thumb_dest.exists():
+        title["posterThumbUrl"] = f"/static/images/posters/thumbs/{fname}.jpg"
+    if backdrop_dest.exists():
+        title["backdropUrl"] = f"/static/images/backdrops/{fname}.jpg"
+
+    for p in title.get("platforms", []):
+        short = p.get("shortName", "")
+        if short in PROVIDER_ICON_FILENAMES:
+            icon_path = ICON_DIR / PROVIDER_ICON_FILENAMES[short]
+            if icon_path.exists():
+                p["icon"] = f"/static/images/icons/{PROVIDER_ICON_FILENAMES[short]}"
+
+
+async def _download_all_images(titles: list[dict]) -> None:
+    """Download all images for titles and rewrite URLs to local paths."""
+    for d in (POSTER_DIR, POSTER_THUMB_DIR, BACKDROP_DIR, ICON_DIR):
+        d.mkdir(parents=True, exist_ok=True)
+
+    sem = asyncio.Semaphore(DOWNLOAD_CONCURRENCY)
+
+    async with httpx.AsyncClient() as client:
+        # Pre-download provider icons
+        icon_coros = []
+        for short, filename in PROVIDER_ICON_FILENAMES.items():
+            url = SA_PROVIDER_ICONS.get(short)
+            if url:
+                icon_coros.append(_download_image(client, url, ICON_DIR / filename, sem))
+        if icon_coros:
+            await asyncio.gather(*icon_coros, return_exceptions=True)
+
+        # Download title images concurrently
+        coros = [_ensure_title_images(client, t, sem) for t in titles]
+        await asyncio.gather(*coros, return_exceptions=True)
+
+    logger.info("Image download complete for %d titles", len(titles))
 
 
 # ---------------------------------------------------------------------------
@@ -680,6 +821,7 @@ async def _refresh_and_persist() -> None:
         titles, counts = await _fetch_all()
         if not titles:
             raise RuntimeError("Fetch returned 0 titles — keeping existing data")
+        await _download_all_images(titles)
         await asyncio.to_thread(_save_to_db, titles, counts)
         _cache["titles"] = titles
         _cache["counts"] = counts
@@ -696,6 +838,21 @@ async def _refresh_and_persist() -> None:
         _refresh_status["running"] = False
 
 
+async def _backfill_images() -> None:
+    """Download images for cached titles that still have external URLs (first deploy)."""
+    titles = _cache["titles"]
+    need_download = [t for t in titles if any(
+        (t.get(k) or "").startswith("http") for k in ("posterUrl", "backdropUrl")
+    )]
+    if not need_download:
+        logger.info("Backfill: all images already local")
+        return
+    logger.info("Backfill: downloading images for %d titles", len(need_download))
+    await _download_all_images(need_download)
+    await asyncio.to_thread(_save_to_db, _cache["titles"], _cache["counts"])
+    logger.info("Backfill: complete, DB updated with local paths")
+
+
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
@@ -710,6 +867,12 @@ async def lifespan(app: FastAPI):
     _cache["updated_at"] = updated_at
     logger.info("Loaded %d titles from DB (last updated %.0fs ago)",
                 len(titles), time.time() - updated_at if updated_at else 0)
+    if titles and any(
+        (t.get("posterUrl") or "").startswith("http")
+        or (t.get("backdropUrl") or "").startswith("http")
+        for t in titles
+    ):
+        asyncio.create_task(_backfill_images())
     yield
 
 
