@@ -71,6 +71,92 @@ Each refresh:
 
 The secret bypasses the cooldown and CSRF check, so the cron can run independently of manual refreshes.
 
+## Fork it for your country
+
+This app filters by **country + audio language**. You can adapt it for German audio in Germany, French audio in Switzerland, etc. Here's what to change:
+
+### backend.py
+
+**1. Country and language** (lines ~35-36):
+
+```python
+COUNTRY = "DE"      # was "BE" — JustWatch country code
+LANGUAGE = "de"     # was "nl" — JustWatch language for metadata
+```
+
+**2. Audio language filter** — search for `"nl"` in these functions and replace with your [ISO 639-1 code](https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes):
+
+- `_jw_has_dutch_audio()` — rename to e.g. `_jw_has_german_audio()`, change `"nl"` to `"de"`
+- `_jw_transform_title()` — same `"nl"` check in the offers loop
+- `_sa_has_dutch_audio()` — rename, change `("nld", "dut")` to your [ISO 639-3 codes](https://en.wikipedia.org/wiki/List_of_ISO_639-3_codes) (e.g. `("deu", "ger")` for German)
+- `_sa_transform_show()` — same language codes in the audios check
+
+**3. Streaming Availability country** (line ~578):
+
+```python
+"country": "de",    # was "be"
+```
+
+Also update `_sa_has_dutch_audio` and `_sa_transform_show` where they access `.get("be", [])` — change to your country code:
+
+```python
+show.get("streamingOptions", {}).get("de", [])   # was .get("be", [])
+```
+
+**4. Providers** — the available platforms differ by country. Update these dicts to match what's available in yours:
+
+- `PROVIDERS` — JustWatch provider short names + display config. Find yours at [JustWatch](https://www.justwatch.com/) by checking what's available in your country.
+- `SA_CATALOGS` — Streaming Availability catalog IDs (see [their docs](https://docs.movieofthenight.com/resource/shows))
+- `SA_SERVICE_MAP` — maps SA service IDs to your provider short names
+- `SA_PROVIDER_ICONS` / `SA_PROVIDER_NAMES` — display names and icon URLs
+- `PROVIDER_ICON_FILENAMES` — local icon filenames
+
+**5. App title** (line ~903):
+
+```python
+app = FastAPI(title="German Audio Streaming Finder", ...)
+```
+
+### static/index.html
+
+**6. HTML metadata** — update these at the top of the file:
+
+- `<html lang="de">` — your language code
+- `<title>` and all `<meta>` tags — your title, description, OG tags
+- `og:url` and `og:image` — your domain
+- `<h1>` — your heading
+- Loading text — "Loading German audio titles..."
+- `img.alt` suffix in the JS — change `"Dutch audio streaming"` to yours
+
+**7. Provider pills** — update the JS config to match your providers:
+
+```javascript
+var DEFAULT_PROVIDERS = ['nfx', 'dnp', 'prv', 'atp'];
+var PROVIDER_CONFIG = [
+    { short: 'nfx', label: 'Netflix' },
+    { short: 'dnp', label: 'Disney+' },
+    // ... your providers
+];
+```
+
+**8. Pill colors** — the CSS has provider-specific colors (`.pill[data-provider="nfx"]`). Add/remove rules for your providers.
+
+### Other files
+
+- **`.env`** — get your own `RAPIDAPI_KEY` from [Streaming Availability](https://www.movieofthenight.com/about/api) and set a `REFRESH_SECRET`
+- **`streaming.ma.ttias.be.conf`** — rename and update the domain
+- **`static/og-image.png`** — replace with your own
+- **`static/sitemap.xml`** / **`static/robots.txt`** — update the domain
+
+### Quick checklist
+
+```
+grep -rn '"nl"' backend.py          # should return nothing after your changes
+grep -rn '"be"' backend.py          # should return nothing
+grep -rn 'Dutch' backend.py static/ # should return nothing
+grep -rn 'Belgium' static/          # should return nothing
+```
+
 ## License
 
 MIT
