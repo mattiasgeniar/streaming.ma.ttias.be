@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <title>Dutch Audio Streaming</title>
-<meta name="description" content="Browse movies & series with Dutch audio across Netflix, Disney+, Prime Video & Apple TV+ in Belgium">
+<meta name="description" content="Browse movies & series with Dutch audio across Netflix, Disney+, Prime Video, Apple TV+, VRT MAX & GoPlay in Belgium">
 <meta property="og:title" content="Dutch Audio Streaming">
-<meta property="og:description" content="Browse movies & series with Dutch audio across Netflix, Disney+, Prime Video & Apple TV+ in Belgium">
+<meta property="og:description" content="Browse movies & series with Dutch audio across Netflix, Disney+, Prime Video, Apple TV+, VRT MAX & GoPlay in Belgium">
 <meta property="og:image" content="https://streaming.ma.ttias.be/static/og-image.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
@@ -15,7 +15,7 @@
 <meta property="og:url" content="https://streaming.ma.ttias.be">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Dutch Audio Streaming">
-<meta name="twitter:description" content="Browse movies & series with Dutch audio across Netflix, Disney+, Prime Video & Apple TV+ in Belgium">
+<meta name="twitter:description" content="Browse movies & series with Dutch audio across Netflix, Disney+, Prime Video, Apple TV+, VRT MAX & GoPlay in Belgium">
 <meta name="twitter:image" content="https://streaming.ma.ttias.be/static/og-image.png">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -101,6 +101,8 @@
   .pill[data-provider="atp"].active,
   .pill[data-provider="itu"].active   { background: #333;    border-color: #555; }
   .pill[data-provider="mxx"].active   { background: #b432d9; border-color: #b432d9; }
+  .pill[data-provider="vrt"].active   { background: #1a1a1a; border-color: #555; }
+  .pill[data-provider="gop"].active   { background: #ff6e00; border-color: #ff6e00; }
   .type-toggle {
     display: flex;
     border: 2px solid #444;
@@ -282,6 +284,8 @@
   .platform-btn[data-provider="dnp"]   { background: #0063e5; }
   .platform-btn[data-provider="prv"]   { background: #00A8E1; }
   .platform-btn[data-provider="atp"]   { background: #333; }
+  .platform-btn[data-provider="vrt"]   { background: #1a1a1a; }
+  .platform-btn[data-provider="gop"]   { background: #ff6e00; }
 
   /* ---------- Loading ---------- */
   main { position: relative; min-height: 60vh; }
@@ -421,6 +425,9 @@
     { short: 'prv', label: 'Prime Video' },
     { short: 'atp', label: 'Apple TV+' },
     { short: 'mxx', label: 'HBO Max' },
+    // Belgian local platforms
+    { short: 'vrt', label: 'VRT MAX' },
+    { short: 'gop', label: 'GoPlay' },
   ];
   let activeProviders = loadProviderPrefs();
   let activeType = 'ALL';

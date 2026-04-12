@@ -53,6 +53,8 @@ PROVIDER_ICON_FILENAMES = {
     "dnp": "disneyplus.png",
     "prv": "amazonprimevideo.png",
     "atp": "appletvplus.png",
+    "vrt": "vrtmax.png",
+    "gop": "goplay.png",
 }
 
 PROVIDERS = {
@@ -60,7 +62,11 @@ PROVIDERS = {
     "dnp": {"name": "Disney+", "color": "#0063e5"},
     "prv": {"name": "Prime Video", "color": "#00A8E1"},
     "atp": {"name": "Apple TV+", "color": "#000000"},
+    "vrt": {"name": "VRT MAX", "color": "#1a1a1a"},
 }
+
+# Belgian local providers — content is inherently Dutch, audioLanguages is often empty
+DUTCH_NATIVE_PROVIDERS = {"vrt"}
 
 # Streaming Availability API
 SA_BASE = "https://streaming-availability.p.rapidapi.com"
@@ -384,6 +390,9 @@ async def _jw_fetch_provider(client: httpx.AsyncClient, provider: str) -> list[d
 
 def _jw_has_dutch_audio(title: dict) -> bool:
     for offer in title.get("offers") or []:
+        pkg_short = (offer.get("package") or {}).get("shortName", "")
+        if pkg_short in DUTCH_NATIVE_PROVIDERS:
+            return True
         if "nl" in (offer.get("audioLanguages") or []):
             return True
     return False
@@ -399,14 +408,18 @@ def _jw_transform_title(title: dict) -> dict:
     backdrops = content.get("backdrops") or []
     backdrop_url = _resolve_image_url(backdrops[0].get("backdropUrl")) if backdrops else None
 
-    # Collect platforms with Dutch audio
+    # Collect platforms with Dutch audio (or Dutch-native providers)
     platforms: list[dict] = []
     seen_packages: set[str] = set()
     for offer in title.get("offers") or []:
-        if "nl" not in (offer.get("audioLanguages") or []):
-            continue
         pkg = offer.get("package") or {}
         short = pkg.get("shortName", "")
+        is_dutch = (
+            short in DUTCH_NATIVE_PROVIDERS
+            or "nl" in (offer.get("audioLanguages") or [])
+        )
+        if not is_dutch:
+            continue
         if short in seen_packages:
             continue
         seen_packages.add(short)
@@ -488,6 +501,8 @@ SA_PROVIDER_ICONS = {
     "dnp": "https://images.justwatch.com/icon/313118777/s100/disneyplus.png",
     "prv": "https://images.justwatch.com/icon/322992749/s100/amazonprimevideo.png",
     "atp": "https://images.justwatch.com/icon/338367329/s100/appletvplus.png",
+    "vrt": "https://images.justwatch.com/icon/301027446/s100/vrtnu.png",
+    "gop": "https://www.play.tv/apple-icon.png",
 }
 
 SA_PROVIDER_NAMES = {
@@ -648,6 +663,121 @@ async def _sa_fetch_all(resume_cursor: str | None = None) -> tuple[dict[str, dic
 
 
 # ---------------------------------------------------------------------------
+# GoPlay API fetching
+# ---------------------------------------------------------------------------
+
+GOPLAY_API = "https://api.play.tv"
+GOPLAY_FREE_BRANDS = {"play", "play_crime", "play_reality", "play_fiction", "play_actie"}
+GOPLAY_CONCURRENCY = 8
+
+
+def _gop_has_dutch_audio(detail: dict) -> bool:
+    """Check if a GoPlay program has Dutch audio.
+
+    Free GoPlay content (play/play_crime/etc.) is local Flemish content and
+    always has empty audioLanguages — treat that as Dutch.
+    """
+    langs = detail.get("audioLanguages") or []
+    if not langs:
+        return True  # local content, inherently Dutch
+    return any("nl" in (lang.get("code") or "") for lang in langs)
+
+
+def _gop_transform(detail: dict) -> dict | None:
+    """Transform a GoPlay program detail into our common title format."""
+    uuid = detail.get("programUuid")
+    if not uuid:
+        return None
+    images = detail.get("images") or {}
+    duration = detail.get("duration")
+    title_type = "MOVIE" if detail.get("type") == "MOVIE" else "SHOW"
+    link = detail.get("link", "")
+
+    return {
+        "id": f"gop-{uuid}",
+        "title": detail.get("title"),
+        "type": title_type,
+        "year": None,
+        "runtime": duration // 60 if duration else None,
+        "synopsis": detail.get("description"),
+        "posterUrl": images.get("portrait"),
+        "backdropUrl": images.get("background"),
+        "imdbScore": None,
+        "imdbId": None,
+        "genres": [detail["category"]] if detail.get("category") else [],
+        "ageCertification": detail.get("parentalRating"),
+        "platforms": [
+            {
+                "name": "GoPlay",
+                "shortName": "gop",
+                "icon": SA_PROVIDER_ICONS.get("gop"),
+                "deeplink": f"https://www.play.tv{link}" if link else None,
+            }
+        ],
+        "source": "goplay",
+    }
+
+
+async def _gop_fetch_all() -> list[dict]:
+    """Fetch free Dutch-audio titles from GoPlay's public API."""
+    sem = asyncio.Semaphore(GOPLAY_CONCURRENCY)
+
+    async with httpx.AsyncClient() as client:
+        # Step 1: Fetch all 27 A-Z lanes (#, A-Z)
+        cards_by_uuid: dict[str, dict] = {}
+        for lane in range(27):
+            try:
+                resp = await client.get(
+                    f"{GOPLAY_API}/tv/v2/pages/programs/lanes/{lane}", timeout=15,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                for card in data.get("cards") or []:
+                    uuid = card.get("uuid")
+                    brand = card.get("brand", "")
+                    if uuid and brand in GOPLAY_FREE_BRANDS:
+                        cards_by_uuid[uuid] = card
+            except Exception:
+                logger.warning("GoPlay: Failed fetching lane %d", lane)
+            await asyncio.sleep(0.1)
+
+        logger.info(
+            "GoPlay: %d free programs from A-Z lanes", len(cards_by_uuid),
+        )
+
+        # Step 2: Fetch details for each program (concurrent, rate-limited)
+        async def fetch_detail(uuid: str) -> dict | None:
+            async with sem:
+                try:
+                    resp = await client.get(
+                        f"{GOPLAY_API}/tv/v2/programs/{uuid}", timeout=15,
+                    )
+                    resp.raise_for_status()
+                    return resp.json()
+                except Exception:
+                    logger.warning("GoPlay: Failed fetching detail for %s", uuid)
+                    return None
+
+        details = await asyncio.gather(
+            *[fetch_detail(uuid) for uuid in cards_by_uuid],
+        )
+
+        # Step 3: Filter for Dutch audio and transform
+        titles: list[dict] = []
+        for detail in details:
+            if detail is None:
+                continue
+            if not _gop_has_dutch_audio(detail):
+                continue
+            transformed = _gop_transform(detail)
+            if transformed is not None:
+                titles.append(transformed)
+
+    logger.info("GoPlay: %d titles with Dutch audio", len(titles))
+    return titles
+
+
+# ---------------------------------------------------------------------------
 # Merged refresh
 # ---------------------------------------------------------------------------
 
@@ -712,10 +842,33 @@ async def _fetch_all() -> tuple[list[dict], dict[str, int]]:
     logger.info("Merge: %d SA-only titles, %d platforms added to existing titles",
                 added_from_sa, merged_platforms_from_sa)
 
+    # Fetch GoPlay (direct API, not on JustWatch)
+    # Deduplicate by slugified title to avoid showing the same program twice
+    # (e.g., a show on both VRT MAX via JustWatch and GoPlay)
+    gop_added = 0
+    try:
+        existing_titles = {
+            _slugify(t.get("title") or "")
+            for t in jw_merged.values()
+            if t.get("title")
+        }
+        gop_titles = await _gop_fetch_all()
+        for t in gop_titles:
+            slug = _slugify(t.get("title") or "")
+            if slug in existing_titles:
+                continue
+            existing_titles.add(slug)
+            jw_merged[t["id"]] = t
+            gop_added += 1
+        logger.info("GoPlay: %d titles, %d after dedup", len(gop_titles), gop_added)
+    except Exception:
+        logger.exception("GoPlay fetch failed, continuing without GoPlay titles")
+
     # Combine counts
     counts = {}
     for p in PROVIDERS:
         counts[p] = jw_counts.get(p, 0) + sa_counts.get(p, 0)
+    counts["gop"] = gop_added
 
     titles = sorted(jw_merged.values(), key=lambda t: t.get("imdbScore") or 0, reverse=True)
     return titles, counts

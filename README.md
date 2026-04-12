@@ -1,6 +1,6 @@
 # Dutch Audio Streaming Finder
 
-Browse movies & series with Dutch audio across Netflix, Disney+, Prime Video & Apple TV+ in Belgium.
+Browse movies & series with Dutch audio across Netflix, Disney+, Prime Video, Apple TV+, VRT MAX & GoPlay in Belgium.
 
 Live at [streaming.ma.ttias.be](https://streaming.ma.ttias.be).
 
@@ -8,9 +8,9 @@ Live at [streaming.ma.ttias.be](https://streaming.ma.ttias.be).
 
 ## Why
 
-There's no way to browse Dutch-audio content across streaming platforms. Netflix has `/browse/audio` but Disney+, Prime, and Apple TV+ don't. This app aggregates all four into a single browsing experience for Belgium (BE).
+There's no way to browse Dutch-audio content across streaming platforms. Netflix has `/browse/audio` but Disney+, Prime, and Apple TV+ don't, and local platforms like VRT MAX and GoPlay are separate silos. This app aggregates them all into a single browsing experience for Belgium (BE).
 
-Data comes from two sources: [JustWatch](https://www.justwatch.com/)'s GraphQL API (primary) and the [Streaming Availability API](https://www.movieofthenight.com/about/api) (fills gaps where JustWatch lacks audio language data, especially Netflix). Titles are filtered for Dutch audio, deduplicated across platforms, and stored locally. The frontend is a single HTML file with no build step.
+Data comes from three sources: [JustWatch](https://www.justwatch.com/)'s GraphQL API (primary, including VRT MAX), the [Streaming Availability API](https://www.movieofthenight.com/about/api) (fills gaps where JustWatch lacks audio language data), and [GoPlay](https://www.play.tv/)'s public API (free Belgian content). Titles are filtered for Dutch audio, deduplicated across platforms, and stored locally. The frontend is a single HTML file with no build step.
 
 ## Vibe coded
 
@@ -36,11 +36,12 @@ Open [http://localhost:8000](http://localhost:8000). On first run the database i
 
 ## How it works
 
-**Backend** (`backend.py`): Python + FastAPI. Fetches from two APIs:
-- **JustWatch** (GraphQL, no key needed): up to 2000 titles per provider, full rescan each refresh
+**Backend** (`backend.py`): Python + FastAPI. Fetches from three sources:
+- **JustWatch** (GraphQL, no key needed): up to 2000 titles per provider (Netflix, Disney+, Prime Video, Apple TV+, VRT MAX), full rescan each refresh
 - **Streaming Availability** (RapidAPI, free tier): fills audio language gaps, paginates incrementally across refreshes (~80 pages/day, full catalog in ~5 days)
+- **GoPlay** (public REST API, no key needed): free Belgian content from Play/Play Crime/Play Reality, filtered for Dutch audio
 
-Titles are filtered for Dutch audio, deduplicated by IMDb ID, and stored in SQLite. Affiliate tracking URLs are stripped from deeplinks.
+Titles are filtered for Dutch audio, deduplicated across sources, and stored in SQLite. Affiliate tracking URLs are stripped from deeplinks.
 
 **Frontend** (`static/index.html`): Single HTML file with embedded CSS & JS. Dark theme, responsive poster grid, provider toggle pills, movie/show filter, search. Click a poster for synopsis, IMDb score, and direct deeplinks to the streaming platform. All filtering is client-side after initial load. Provider selections are saved in localStorage.
 
