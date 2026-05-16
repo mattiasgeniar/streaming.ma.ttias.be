@@ -1072,6 +1072,25 @@ async def sitemap():
     return FileResponse(STATIC_DIR / "sitemap.xml", media_type="application/xml")
 
 
+@app.get("/manifest.webmanifest")
+async def manifest():
+    return FileResponse(
+        STATIC_DIR / "manifest.webmanifest",
+        media_type="application/manifest+json",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
+@app.get("/service-worker.js")
+async def service_worker():
+    # Served from origin root so the SW can claim scope "/".
+    return FileResponse(
+        STATIC_DIR / "service-worker.js",
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"},
+    )
+
+
 @app.get("/api/titles")
 async def api_titles():
     return _cache["titles"]
