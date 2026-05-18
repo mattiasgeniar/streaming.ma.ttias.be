@@ -71,7 +71,7 @@ DUTCH_NATIVE_PROVIDERS = {"vrt"}
 # Streaming Availability API
 SA_BASE = "https://streaming-availability.p.rapidapi.com"
 SA_CATALOGS = "netflix,disney,prime.subscription,apple"
-SA_MAX_REQUESTS_PER_REFRESH = 80  # leave headroom in 100/day free tier
+SA_MAX_REQUESTS_PER_REFRESH = 40  # free tier is 100/day; leave room for a manual refresh on top of the daily cron
 # Map SA service IDs to our provider short names
 SA_SERVICE_MAP = {
     "netflix": "nfx",
